@@ -58,20 +58,20 @@ export function Navbar() {
     <>
       <nav className="h-16 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-sky-100 dark:border-slate-800 z-50 px-4 md:px-8 flex items-center justify-between transition-colors duration-300">
         <Link href="/" className="flex items-center gap-2 group">
-          <Image src="/images/cherry-logo.svg" alt="Logo" width={40} height={40} className="h-10 w-auto transition-transform" />
+          <Image src="/logo.svg" alt="Maco Logo" width={40} height={40} className="h-10 w-auto transition-transform" />
         </Link>
         
         <div className="flex items-center gap-2">
-          <button
+          {/* <button
             onClick={() => setShowDonation(true)}
             className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-full transition-all duration-300 cursor-pointer"
             title="支持作者"
           >
             <Heart className="w-5 h-5" />
-          </button>
+          </button> */}
           
           <a 
-            href="https://github.com/markcxx/coco-downloader" 
+            href="https://github.com/moky20258/Maco-Downloader"
             target="_blank" 
             rel="noopener noreferrer"
             className="p-2 text-slate-400 dark:text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-all duration-300 cursor-pointer"

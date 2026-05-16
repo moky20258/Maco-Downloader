@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for Coco Downloader",
+  "local": true,
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

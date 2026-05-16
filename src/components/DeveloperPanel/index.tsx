@@ -1,6 +1,6 @@
 'use client';
 
-import { Drawer } from '@lobehub/ui';
+import { Drawer } from 'antd';
 
 import DeveloperProfile from './developer-profile';
 
@@ -16,11 +16,13 @@ interface DeveloperPanelProps {
 export default function DeveloperPanel({ open, onClose }: DeveloperPanelProps) {
   return (
     <Drawer
-      height={isDesktop ? `calc(100vh - ${TITLE_BAR_HEIGHT}px)` : '100vh'}
-      noHeader
+      closable={false}
+      destroyOnClose
       onClose={onClose}
       open={open}
       placement={'bottom'}
+      size={isDesktop ? 'large' : 'default'}
+      styles={{ body: { padding: 0 } }}
     >
       <DeveloperProfile />
     </Drawer>

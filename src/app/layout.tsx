@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Navbar } from "@/components/Navbar";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { ConfigProvider } from "antd";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "COCO音乐下载站",
+  title: "Maco音乐下载站",
   description: "简约纯净的音乐下载工具",
   icons: {
     icon: "/logo.svg",
@@ -52,9 +53,32 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          <ConfigProvider
+            theme={{
+              components: {
+                Drawer: {
+                  zIndexPopup: 1000,
+                },
+              },
+            }}
+          >
           <script
             dangerouslySetInnerHTML={{
-              __html: `window.__COCO_ENV=${JSON.stringify(clientEnv)};`,
+              __html: `
+                window.__COCO_ENV=${JSON.stringify(clientEnv)};
+                (function() {
+                  var originalWarn = console.warn;
+                  console.warn = function() {
+                    var msg = arguments[0];
+                    if (msg && typeof msg === 'string' && 
+                        msg.indexOf('[antd: Drawer]') !== -1 && 
+                        (msg.indexOf('width') !== -1 || msg.indexOf('height') !== -1)) {
+                      return;
+                    }
+                    originalWarn.apply(console, arguments);
+                  };
+                })();
+              `,
             }}
           />
           <div className="sticky top-0 z-[60] w-full flex flex-col">
@@ -66,6 +90,7 @@ export default function RootLayout({
             <Navbar />
           </div>
           <div className="min-h-screen">{children}</div>
+          </ConfigProvider>
         </ThemeProvider>
       </body>
     </html>

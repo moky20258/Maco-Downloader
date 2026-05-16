@@ -10,13 +10,13 @@ export default function AboutPage() {
           </div>
           <div>
             <h1 className="text-2xl font-bold text-slate-800">关于作者</h1>
-            <p className="text-slate-500">CoCo Studio</p>
+            <p className="text-slate-500">Maco Studio</p>
           </div>
         </div>
         
         <div className="space-y-6 text-slate-600">
           <p>
-            欢迎来到 COCO 音乐下载站。这是一个致力于提供纯净、快速音乐搜索与下载体验的项目。
+            欢迎来到 Maco 音乐下载站。这是一个致力于提供纯净、快速音乐搜索与下载体验的项目。
             我们摒弃了繁杂的广告与推荐，只为您呈现最直接的音乐内容。
           </p>
           
@@ -33,7 +33,7 @@ export default function AboutPage() {
               <Mail className="w-5 h-5 text-sky-500" />
               <div>
                 <h3 className="font-medium text-slate-800">联系我们</h3>
-                <p className="text-sm text-slate-500">contact@coco.studio (Placeholder)</p>
+                <p className="text-sm text-slate-500">contact@maco.studio</p>
               </div>
             </div>
           </div>

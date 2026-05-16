@@ -10,6 +10,11 @@
 !.yarn/releases
 !.yarn/versions
 
+# dependency lock files (optional - remove if you want to track them)
+package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
 # testing
 /coverage
 
@@ -39,3 +44,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Tauri
+src-tauri/target
+src-tauri/gen
