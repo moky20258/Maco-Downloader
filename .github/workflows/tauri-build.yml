@@ -39,10 +39,9 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install Rust stable
-        uses: rust-lang/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
-          toolchain: stable
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
