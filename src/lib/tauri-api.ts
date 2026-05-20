@@ -39,14 +39,19 @@ export async function getMusicUrl(id: string, provider: string): Promise<string>
 }
 
 // 下载音乐
-export async function downloadMusic(id: string, filename: string, provider: string): Promise<string> {
+export async function downloadMusic(id: string, filename: string, provider: string): Promise<ArrayBuffer> {
   if (isTauri()) {
-    return await invoke<string>('download_music', {
+    const bytes = await invoke<number[]>('download_music', {
       id,
       filename,
       provider,
     });
+    // 将数字数组转换为 ArrayBuffer
+    return new Uint8Array(bytes).buffer;
   } else {
-    return `/api/download?id=${encodeURIComponent(id)}&filename=${encodeURIComponent(filename)}&provider=${provider}`;
+    // 返回 URL（开发环境）
+    const url = `/api/download?id=${encodeURIComponent(id)}&filename=${encodeURIComponent(filename)}&provider=${provider}`;
+    const response = await fetch(url);
+    return await response.arrayBuffer();
   }
 }

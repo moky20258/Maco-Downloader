@@ -108,7 +108,26 @@ pub async fn get_music_url(id: String, provider: String) -> Result<UrlResponse, 
 }
 
 #[command]
-pub async fn download_music(id: String, filename: String, provider: String) -> Result<String, String> {
-    // 返回下载 API URL，前端会处理实际下载
-    get_music_url(id, provider).await.map(|resp| resp.url)
+pub async fn download_music(id: String, filename: String, provider: String) -> Result<Vec<u8>, String> {
+    // 获取音乐 URL
+    let url_response = get_music_url(id, provider).await?;
+    let url = url_response.url;
+    
+    // 使用 reqwest 下载文件
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("Failed to create client: {}", e))?;
+    
+    let response = client.get(&url)
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {}", e))?;
+    
+    let bytes = response.bytes()
+        .await
+        .map_err(|e| format!("Read bytes failed: {}", e))?;
+    
+    Ok(bytes.to_vec())
 }

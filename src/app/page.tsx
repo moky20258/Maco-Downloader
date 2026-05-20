@@ -270,18 +270,15 @@ export default function Home() {
       }
 
       // 获取下载 URL
-      const downloadUrl = await downloadMusic(
+      const arrayBuffer = await downloadMusic(
         task.musicItem.id,
         task.fileName,
         task.musicItem.provider || 'gequbao'
       );
 
-      // 在 Tauri 环境中，直接使用 URL 下载
-      if (downloadUrl) {
-        // 使用 fetch 下载文件
-        const response = await fetch(downloadUrl);
-        const blob = await response.blob();
-        
+      // 创建 Blob 并下载
+      if (arrayBuffer) {
+        const blob = new Blob([arrayBuffer]);
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
