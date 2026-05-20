@@ -10,6 +10,7 @@ import { PlayerBar } from "@/components/PlayerBar";
 import { DownloadDrawer } from "@/components/DownloadDrawer";
 import { DownloadTask } from "@/types/download";
 import axios from "axios";
+import { searchMusic, getMusicUrl, downloadMusic } from "@/lib/tauri-api";
 
 const SourceLinkButton = ({ item }: { item: MusicItem }) => {
   const [loading, setLoading] = useState(false);
@@ -20,10 +21,9 @@ const SourceLinkButton = ({ item }: { item: MusicItem }) => {
     
     setLoading(true);
     try {
-      const res = await fetch(`/api/url?id=${item.id}&provider=${item.provider || 'gequbao'}`);
-      const data = await res.json();
-      if (data.url) {
-        window.open(data.url, '_blank');
+      const url = await getMusicUrl(item.id, item.provider || 'gequbao');
+      if (url) {
+        window.open(url, '_blank');
       } else {
         alert('无法获取源链接');
       }
@@ -75,12 +75,9 @@ export default function Home() {
   const [downloadEnabled, setDownloadEnabled] = useState(true);
 
   const openSourceUrl = async (item: MusicItem) => {
-    const res = await fetch(
-      `/api/url?id=${encodeURIComponent(item.id)}&provider=${encodeURIComponent(item.provider || "gequbao")}`
-    );
-    const data = await res.json();
-    if (data?.url) {
-      window.open(data.url, "_blank");
+    const url = await getMusicUrl(item.id, item.provider || "gequbao");
+    if (url) {
+      window.open(url, "_blank");
       return;
     }
     throw new Error("Failed to get source url");
@@ -105,9 +102,8 @@ export default function Home() {
     setSelectedIds(new Set());
     
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&provider=${provider}`);
-      const data = await res.json();
-      setResults(data.items || []);
+      const items = await searchMusic(query, provider);
+      setResults(items);
     } catch (err) {
       console.error(err);
     } finally {
@@ -170,16 +166,13 @@ export default function Home() {
       setPlaying(false); // Wait for load
       setCurrentTime(0);
 
-      const res = await fetch(`/api/url?id=${item.id}&provider=${item.provider || 'gequbao'}`);
-      const data = await res.json();
+      const url = await getMusicUrl(item.id, item.provider || 'gequbao');
       
-      if (data.url && audioRef.current) {
+      if (url && audioRef.current) {
         // 如果返回了封面，更新当前播放歌曲的封面
-        if (data.cover) {
-          setActiveMusic(prev => prev ? { ...prev, cover: data.cover } : item);
-        }
+        // 注意：Rust 后端暂不支持返回 cover，后续可扩展
         
-        audioRef.current.src = data.url;
+        audioRef.current.src = url;
         audioRef.current.load();
         audioRef.current.play()
           .then(() => setPlaying(true))
@@ -276,32 +269,28 @@ export default function Home() {
         return;
       }
 
-      const response = await axios.get(`/api/download`, {
-        params: {
-          id: task.musicItem.id,
-          provider: task.musicItem.provider || 'gequbao',
-          filename: task.fileName
-        },
-        responseType: 'blob',
-        onDownloadProgress: (progressEvent) => {
-          if (progressEvent.total) {
-            const percent = (progressEvent.loaded / progressEvent.total) * 100;
-            setDownloadTasks(prev => prev.map(t => 
-              t.id === task.id ? { ...t, progress: percent } : t
-            ));
-          }
-        }
-      });
+      // 获取下载 URL
+      const downloadUrl = await downloadMusic(
+        task.musicItem.id,
+        task.fileName,
+        task.musicItem.provider || 'gequbao'
+      );
 
-      // Handle completion
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = task.fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      // 在 Tauri 环境中，直接使用 URL 下载
+      if (downloadUrl) {
+        // 使用 fetch 下载文件
+        const response = await fetch(downloadUrl);
+        const blob = await response.blob();
+        
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = task.fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+      }
 
       setDownloadTasks(prev => prev.map(t => 
         t.id === task.id ? { ...t, status: 'completed', progress: 100 } : t
