@@ -1,7 +1,7 @@
 {
   "productName": "maco-downloader",
   "version": "0.1.0",
-  "identifier": "com.maco-downloader.app",
+  "identifier": "com.maco-downloader",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000",
