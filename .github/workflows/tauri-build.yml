@@ -68,7 +68,7 @@ jobs:
         with:
           args: ${{ matrix.args }}
           projectPath: '.'
-          appName: maco-downloader
+          appName: maco-music
 
       - name: Upload artifacts (Windows)
         if: matrix.platform == 'windows-latest'
