@@ -9,6 +9,7 @@ import { MusicItem } from "@/types/music";
 import { PlayerBar } from "@/components/PlayerBar";
 import { DownloadDrawer } from "@/components/DownloadDrawer";
 import { PlaylistDrawer } from "@/components/PlaylistDrawer";
+import { UpdateChecker } from "@/components/UpdateChecker";
 import { DownloadTask } from "@/types/download";
 import axios from "axios";
 import { searchMusic, getMusicUrl, downloadMusic } from "@/lib/tauri-api";
@@ -420,8 +421,33 @@ export default function Home() {
   };
 
   const currentIndex = activeMusic ? results.findIndex(r => r.id === activeMusic.id) : -1;
+  const currentPlaylistIndex = activeMusic ? playlist.findIndex(p => p.id === activeMusic.id && p.provider === activeMusic.provider) : -1;
+  
+  // 判断当前是否在播放播放列表
+  const isPlayingFromPlaylist = currentPlaylistIndex >= 0;
+  
   const getNextIndex = () => {
     if (!activeMusic) return -1;
+    
+    // 如果正在播放播放列表，使用播放列表
+    if (isPlayingFromPlaylist) {
+      if (playMode === "shuffle") {
+        // 随机播放：从播放列表中随机选择
+        if (playlist.length <= 1) return -1;
+        let randomIndex;
+        do {
+          randomIndex = Math.floor(Math.random() * playlist.length);
+        } while (randomIndex === currentPlaylistIndex);
+        return randomIndex;
+      }
+      // 顺序播放
+      if (currentPlaylistIndex >= 0 && currentPlaylistIndex < playlist.length - 1) {
+        return currentPlaylistIndex + 1;
+      }
+      return -1;
+    }
+    
+    // 否则使用搜索结果列表
     if (playMode === "shuffle") {
       if (shuffleIndex >= 0 && shuffleIndex < shuffleOrder.length - 1) {
         const nextId = shuffleOrder[shuffleIndex + 1];
@@ -437,6 +463,26 @@ export default function Home() {
 
   const getPrevIndex = () => {
     if (!activeMusic) return -1;
+    
+    // 如果正在播放播放列表，使用播放列表
+    if (isPlayingFromPlaylist) {
+      if (playMode === "shuffle") {
+        // 随机播放：从播放列表中随机选择
+        if (playlist.length <= 1) return -1;
+        let randomIndex;
+        do {
+          randomIndex = Math.floor(Math.random() * playlist.length);
+        } while (randomIndex === currentPlaylistIndex);
+        return randomIndex;
+      }
+      // 顺序播放
+      if (currentPlaylistIndex > 0) {
+        return currentPlaylistIndex - 1;
+      }
+      return -1;
+    }
+    
+    // 否则使用搜索结果列表
     if (playMode === "shuffle") {
       if (shuffleIndex > 0) {
         const prevId = shuffleOrder[shuffleIndex - 1];
@@ -455,11 +501,26 @@ export default function Home() {
 
   const handleNext = () => {
     const nextIndex = getNextIndex();
-    if (nextIndex >= 0) handlePlay(results[nextIndex]);
+    if (nextIndex >= 0) {
+      // 根据播放来源选择正确的列表
+      if (isPlayingFromPlaylist) {
+        handlePlay(playlist[nextIndex]);
+      } else {
+        handlePlay(results[nextIndex]);
+      }
+    }
   };
+  
   const handlePrev = () => {
     const prevIndex = getPrevIndex();
-    if (prevIndex >= 0) handlePlay(results[prevIndex]);
+    if (prevIndex >= 0) {
+      // 根据播放来源选择正确的列表
+      if (isPlayingFromPlaylist) {
+        handlePlay(playlist[prevIndex]);
+      } else {
+        handlePlay(results[prevIndex]);
+      }
+    }
   };
 
   const togglePlayMode = () => {
@@ -543,7 +604,12 @@ export default function Home() {
       }
       const nextIndex = getNextIndex();
       if (nextIndex >= 0) {
-        handlePlay(results[nextIndex]);
+        // 根据播放来源选择正确的列表
+        if (isPlayingFromPlaylist) {
+          handlePlay(playlist[nextIndex]);
+        } else {
+          handlePlay(results[nextIndex]);
+        }
       } else {
         setPlaying(false);
       }
@@ -558,7 +624,7 @@ export default function Home() {
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       audio.removeEventListener('ended', handleEnded);
     };
-  }, [playing, playMode, results, activeMusic, shuffleIndex, shuffleOrder, getNextIndex, handlePlay]);
+  }, [playing, playMode, results, playlist, activeMusic, shuffleIndex, shuffleOrder, isPlayingFromPlaylist, handlePlay]);
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans selection:bg-sky-100 dark:selection:bg-sky-900 pb-32 transition-colors duration-300">
@@ -1012,6 +1078,9 @@ export default function Home() {
         onMoveUp={movePlaylistItemUp}
         onMoveDown={movePlaylistItemDown}
       />
+
+      {/* Update Checker */}
+      <UpdateChecker />
     </main>
   );
 }
