@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1 } from "lucide-react";
+import { Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Shuffle, Repeat, Repeat1, ListMusic } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MusicItem } from "@/types/music";
@@ -20,6 +20,8 @@ interface PlayerBarProps {
   onSeek: (time: number) => void;
   volume: number;
   onVolumeChange: (volume: number) => void;
+  onOpenPlaylist?: () => void;
+  playlistCount?: number;
 }
 
 export function PlayerBar({
@@ -34,7 +36,9 @@ export function PlayerBar({
   duration,
   onSeek,
   volume,
-  onVolumeChange
+  onVolumeChange,
+  onOpenPlaylist,
+  playlistCount = 0
 }: PlayerBarProps) {
   const formatTime = (time?: number) => {
     const t = typeof time === "number" ? time : 0;
@@ -81,8 +85,8 @@ export function PlayerBar({
         </div>
 
         <div className="container mx-auto max-w-5xl flex items-center justify-between gap-4">
-          {/* Track Info */}
-          <div className="flex items-center gap-3 md:gap-4 flex-1 md:w-1/4 md:min-w-[200px] min-w-0">
+          {/* Track Info - Left */}
+          <div className="flex items-center gap-3 md:gap-4 w-1/4 min-w-[200px] min-w-0">
             <div className={cn(
               "w-10 h-10 md:w-12 md:h-12 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden relative flex-shrink-0",
               isPlaying && "animate-spin-slow"
@@ -108,32 +112,48 @@ export function PlayerBar({
             </div>
           </div>
 
-          {/* Mobile Play Button */}
-          <div className="md:hidden flex items-center gap-4">
-            <button 
-              onClick={onPlayPause}
-              className="w-9 h-9 rounded-full bg-sky-500 text-white flex items-center justify-center shadow-md active:scale-95 transition-transform"
-            >
-              {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
-            </button>
-            <button 
-              onClick={onNext}
-              disabled={!onNext}
-              className="text-slate-400 dark:text-slate-500 active:text-sky-500"
-            >
-               <SkipForward className="w-6 h-6" />
-            </button>
-            <button
-              onClick={onTogglePlayMode}
-              className="text-slate-400 dark:text-slate-500 active:text-sky-500"
-              title={modeLabel}
-            >
-              <ModeIcon className="w-5 h-5" />
-            </button>
-          </div>
+          {/* Center Controls - Fixed width for perfect centering */}
+          <div className="flex flex-col items-center flex-1 max-w-xl">
+            {/* Mobile Controls */}
+            <div className="md:hidden flex items-center gap-4">
+              <button 
+                onClick={onPlayPause}
+                className="w-9 h-9 rounded-full bg-sky-500 text-white flex items-center justify-center shadow-md active:scale-95 transition-transform"
+              >
+                {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+              </button>
+              <button 
+                onClick={onNext}
+                disabled={!onNext}
+                className="text-slate-400 dark:text-slate-500 active:text-sky-500"
+              >
+                 <SkipForward className="w-6 h-6" />
+              </button>
+              {onOpenPlaylist && (
+                <button
+                  onClick={onOpenPlaylist}
+                  className="text-slate-400 dark:text-slate-500 active:text-sky-500 relative"
+                  title="播放列表"
+                >
+                  <ListMusic className="w-5 h-5" />
+                  {playlistCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-sky-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center">
+                      {playlistCount > 99 ? '99+' : playlistCount}
+                    </span>
+                  )}
+                </button>
+              )}
+              <button
+                onClick={onTogglePlayMode}
+                className="text-slate-400 dark:text-slate-500 active:text-sky-500"
+                title={modeLabel}
+              >
+                <ModeIcon className="w-5 h-5" />
+              </button>
+            </div>
 
-          {/* Desktop Controls */}
-          <div className="hidden md:flex flex-col items-center flex-1 max-w-lg">
+            {/* Desktop Controls */}
+            <div className="hidden md:flex flex-col items-center w-full">
             <div className="flex items-center gap-6 mb-1">
               <button 
                 onClick={onPrev}
@@ -157,14 +177,6 @@ export function PlayerBar({
               >
                 <SkipForward className="w-5 h-5" />
               </button>
-
-              <button
-                onClick={onTogglePlayMode}
-                className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors cursor-pointer"
-                title={modeLabel}
-              >
-                <ModeIcon className="w-5 h-5" />
-              </button>
             </div>
             
             <div className="w-full flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500 font-medium">
@@ -185,9 +197,35 @@ export function PlayerBar({
               <span className="w-10 tabular-nums">{formatTime(duration)}</span>
             </div>
           </div>
+          </div>
 
           {/* Volume & Extras (Desktop Only) */}
           <div className="hidden md:flex w-1/4 justify-end items-center gap-4 min-w-[150px]">
+            {/* Playlist Button */}
+            {onOpenPlaylist && (
+              <button
+                onClick={onOpenPlaylist}
+                className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors cursor-pointer relative"
+                title="播放列表"
+              >
+                <ListMusic className="w-5 h-5" />
+                {playlistCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-sky-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center">
+                    {playlistCount > 99 ? '99+' : playlistCount}
+                  </span>
+                )}
+              </button>
+            )}
+            
+            {/* Play Mode Button */}
+            <button
+              onClick={onTogglePlayMode}
+              className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors cursor-pointer"
+              title={modeLabel}
+            >
+              <ModeIcon className="w-5 h-5" />
+            </button>
+            
             <div className="flex items-center gap-2 group w-32">
               <button 
                 onClick={() => onVolumeChange(volume === 0 ? 1 : 0)}

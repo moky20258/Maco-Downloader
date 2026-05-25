@@ -2,46 +2,50 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import Image from "next/image";
-import { Search, Loader2, Play, Pause, Download, Check, Music, Trash2, Flame, Zap, ShieldCheck, Headphones, ExternalLink } from "lucide-react";
+import { Search, Loader2, Play, Pause, Download, Check, Music, Trash2, Flame, Zap, ShieldCheck, Headphones, ExternalLink, ListPlus, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MusicItem } from "@/types/music";
 import { PlayerBar } from "@/components/PlayerBar";
 import { DownloadDrawer } from "@/components/DownloadDrawer";
+import { PlaylistDrawer } from "@/components/PlaylistDrawer";
 import { DownloadTask } from "@/types/download";
 import axios from "axios";
 import { searchMusic, getMusicUrl, downloadMusic } from "@/lib/tauri-api";
 
 const SourceLinkButton = ({ item }: { item: MusicItem }) => {
-  const [loading, setLoading] = useState(false);
-
-  const handleClick = async (e: React.MouseEvent) => {
+  const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (loading) return;
     
-    setLoading(true);
-    try {
-      const url = await getMusicUrl(item.id, item.provider || 'gequbao');
-      if (url) {
-        window.open(url, '_blank');
-      } else {
-        alert('无法获取源链接');
-      }
-    } catch (error) {
-      console.error(error);
-      alert('获取链接失败');
-    } finally {
-      setLoading(false);
-    }
+    // 根据 provider 打开对应的源网站
+    const providerUrls: Record<string, string> = {
+      'gequbao': 'https://www.gequbao.com',
+      'gequhai': 'https://www.gequhai.com',
+      'bugu': 'https://a.buguyy.top',
+      'qq': 'https://y.qq.com',
+      'qqmp3': 'https://www.qqmp3.vip',
+      'migu': 'https://music.migu.cn',
+      'livepoo': 'https://www.livepoo.cn',
+      'jianbin-netease': 'https://music.163.com',
+      'jianbin-qq': 'https://y.qq.com',
+      'jianbin-kugou': 'https://www.kugou.com',
+      'jianbin-kuwo': 'https://www.kuwo.cn',
+    };
+    
+    const baseUrl = providerUrls[item.provider] || 'https://www.gequbao.com';
+    // 尝试构造搜索 URL（不同网站的搜索 URL 格式不同）
+    const searchUrl = `${baseUrl}/search?q=${encodeURIComponent(item.title)}`;
+    
+    window.open(searchUrl, '_blank');
   };
 
   return (
     <button
       onClick={handleClick}
       className="p-2 text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer flex items-center justify-center"
-      title="打开源文件链接"
+      title="打开源网站"
     >
-      {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <ExternalLink className="w-5 h-5" />}
+      <ExternalLink className="w-5 h-5" />
     </button>
   );
 };
@@ -73,6 +77,23 @@ export default function Home() {
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [downloadEnabled, setDownloadEnabled] = useState(true);
+  
+  // Playlist State - with persistence
+  const [playlist, setPlaylist] = useState<MusicItem[]>(() => {
+    // 从 localStorage 恢复播放列表
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('maco-playlist');
+        if (saved) {
+          return JSON.parse(saved);
+        }
+      } catch (error) {
+        console.error('Failed to load playlist from localStorage:', error);
+      }
+    }
+    return [];
+  });
+  const [isPlaylistOpen, setIsPlaylistOpen] = useState(false);
 
   const openSourceUrl = async (item: MusicItem) => {
     const url = await getMusicUrl(item.id, item.provider || "gequbao");
@@ -449,6 +470,56 @@ export default function Home() {
     });
   };
 
+  // Playlist Functions
+  const addToPlaylist = (item: MusicItem) => {
+    setPlaylist(prev => {
+      const exists = prev.find(p => p.id === item.id && p.provider === item.provider);
+      if (exists) {
+        return prev;
+      }
+      return [...prev, item];
+    });
+  };
+
+  const removeFromPlaylist = (id: string, provider: string) => {
+    setPlaylist(prev => prev.filter(p => !(p.id === id && p.provider === provider)));
+  };
+
+  const clearPlaylist = () => {
+    setPlaylist([]);
+  };
+
+  // 播放列表持久化：每当 playlist 变化时保存到 localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('maco-playlist', JSON.stringify(playlist));
+    } catch (error) {
+      console.error('Failed to save playlist to localStorage:', error);
+    }
+  }, [playlist]);
+
+  const playFromPlaylist = (item: MusicItem) => {
+    handlePlay(item);
+  };
+
+  const movePlaylistItemUp = (index: number) => {
+    if (index === 0) return;
+    setPlaylist(prev => {
+      const newPlaylist = [...prev];
+      [newPlaylist[index - 1], newPlaylist[index]] = [newPlaylist[index], newPlaylist[index - 1]];
+      return newPlaylist;
+    });
+  };
+
+  const movePlaylistItemDown = (index: number) => {
+    if (index === playlist.length - 1) return;
+    setPlaylist(prev => {
+      const newPlaylist = [...prev];
+      [newPlaylist[index], newPlaylist[index + 1]] = [newPlaylist[index + 1], newPlaylist[index]];
+      return newPlaylist;
+    });
+  };
+
   useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio();
@@ -507,7 +578,7 @@ export default function Home() {
              </span>
           </div>
           <h1 className="text-4xl md:text-6xl font-bold text-slate-800 dark:text-slate-100 tracking-tight mb-4 text-center">
-            Maco音乐下载站
+            Maco 在线音乐
           </h1>
           <p className="text-slate-500 dark:text-slate-400 text-lg mb-8 max-w-lg text-center leading-relaxed hidden md:block">
             您的专属高品质音乐获取助手，支持多平台搜索，
@@ -773,7 +844,21 @@ export default function Home() {
                         </div>
 
                         <div className="flex justify-end pr-2 md:pr-2 gap-2">
-                          <SourceLinkButton item={item} />
+                          <button
+                            onClick={(e) => { e.stopPropagation(); handlePlay(item); }}
+                            className="p-2 text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
+                            title="播放"
+                          >
+                            <Play className="w-5 h-5" />
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); addToPlaylist(item); }}
+                            className="p-2 text-slate-400 dark:text-slate-500 hover:text-green-500 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
+                            title="添加到播放列表"
+                          >
+                            <ListPlus className="w-5 h-5" />
+                          </button>
+                          {/* <SourceLinkButton item={item} /> */}
                           {downloadEnabled ? (
                             <button
                               onClick={(e) => { e.stopPropagation(); downloadOne(item); }}
@@ -820,7 +905,7 @@ export default function Home() {
             animate={{ scale: 1 }}
             exit={{ scale: 0 }}
             onClick={() => setIsDrawerOpen(true)}
-            className="fixed bottom-6 right-6 z-50 w-14 h-14 bg-sky-500 hover:bg-sky-600 text-white rounded-full shadow-lg shadow-sky-500/30 flex items-center justify-center transition-all active:scale-95 group"
+            className="fixed bottom-24 right-6 z-[60] w-14 h-14 bg-sky-500 hover:bg-sky-600 text-white rounded-full shadow-lg shadow-sky-500/30 flex items-center justify-center transition-all active:scale-95 group"
           >
             <div className="relative">
                <Download className="w-6 h-6" />
@@ -846,7 +931,7 @@ export default function Home() {
             initial={{ y: 100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 100, opacity: 0 }}
-            className="fixed bottom-24 left-0 right-0 flex justify-center z-40 pointer-events-none"
+            className="fixed bottom-40 left-0 right-0 flex justify-center z-[60] pointer-events-none"
           >
             <div className="bg-white dark:bg-slate-900 shadow-xl shadow-slate-200/50 dark:shadow-none border border-slate-100 dark:border-slate-800 rounded-full px-6 py-3 flex items-center gap-6 pointer-events-auto">
               <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
@@ -908,9 +993,25 @@ export default function Home() {
             onSeek={handleSeek}
             volume={volume}
             onVolumeChange={setVolume}
+            onOpenPlaylist={() => setIsPlaylistOpen(true)}
+            playlistCount={playlist.length}
           />
         )}
       </AnimatePresence>
+
+      {/* Playlist Drawer */}
+      <PlaylistDrawer
+        isOpen={isPlaylistOpen}
+        onClose={() => setIsPlaylistOpen(false)}
+        playlist={playlist}
+        currentMusic={activeMusic}
+        isPlaying={playing}
+        onPlay={playFromPlaylist}
+        onRemove={removeFromPlaylist}
+        onClear={clearPlaylist}
+        onMoveUp={movePlaylistItemUp}
+        onMoveDown={movePlaylistItemDown}
+      />
     </main>
   );
 }

@@ -1,7 +1,7 @@
 {
-  "productName": "maco-downloader",
+  "productName": "maco-music",
   "version": "0.1.0",
-  "identifier": "com.maco-downloader",
+  "identifier": "com.maco-music",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:3000",
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Maco Downloader",
+        "title": "Maco Music",
         "width": 1080,
         "height": 646,
         "resizable": true,
