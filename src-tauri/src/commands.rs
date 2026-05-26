@@ -328,20 +328,36 @@ async fn search_qqmp3(client: &Client, query: &str) -> Result<SearchResponse, St
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
 
-    let json: serde_json::Value = response.json()
+    let text = response.text()
         .await
+        .map_err(|e| format!("Read response failed: {}", e))?;
+
+    // 调试输出
+    eprintln!("QQMP3 response: {}", &text[..text.len().min(200)]);
+
+    let json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
-    let list = json.get("data")
-        .and_then(|d| d.as_array())
-        .ok_or("Invalid response format")?;
+    // 检查不同的响应格式
+    let list = if let Some(data) = json.get("data") {
+        if data.is_array() {
+            data.as_array().unwrap()
+        } else if let Some(items) = data.get("data") {
+            // {"data": {"data": [...]}}
+            items.as_array().ok_or("Invalid data format")?
+        } else {
+            return Ok(SearchResponse { items: vec![] });
+        }
+    } else {
+        return Ok(SearchResponse { items: vec![] });
+    };
 
     let items: Vec<MusicItem> = list.iter()
         .filter_map(|item| {
             let id = item.get("rid")?.as_str()?.to_string();
             let title = item.get("name")?.as_str()?.to_string();
             let artist = item.get("artist")?.as_str().unwrap_or("未知歌手").to_string();
-            let cover = item.get("pic")?.as_str().map(|s| s.to_string());
+            let cover = item.get("pic").and_then(|v| v.as_str()).map(|s| s.to_string());
             
             Some(MusicItem {
                 id,
@@ -473,11 +489,11 @@ async fn search_livepoo(client: &Client, query: &str) -> Result<SearchResponse, 
             let id_param = url_obj.query_pairs().find(|(k, _)| k == "id")?.1;
             let id = id_param.replace("MUSIC_", "");
             
-            // 获取li元素中的更多信息
-            let li = el.parent()?;
-            let _song_info = li.value().as_element()?;
+            // 获取li元素（需要重新解析HTML查找li）
+            // 由于scraper的限制，我们直接从el向上查找不太方便
+            // 改为使用el的文本，然后尝试查找歌手链接
             
-            // 尝试从不同的元素中提取标题和歌手
+            // 尝试从链接文本获取
             let title_text = el.text().collect::<Vec<_>>().join("");
             
             // 清理文本：移除多余空白和干扰词
@@ -648,6 +664,8 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
     let play_url = format!("https://www.gequhai.com/play/{}", id);
     let response = client.get(&play_url)
         .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .header("referer", "https://www.gequhai.com/")
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
@@ -657,26 +675,36 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
         .await
         .map_err(|e| format!("Read response failed: {}", e))?;
 
-    // 提取play_id
-    let re = Regex::new(r#"window\.appData\s*=\s*\{[^}]*"play_id"\s*:\s*"([^"]+)""#).map_err(|e| format!("Regex failed: {}", e))?;
-    if let Some(captures) = re.captures(&html) {
-        if let Some(play_id) = captures.get(1) {
-            let api_response = client.post("https://www.gequhai.com/api/music")
-                .form(&[("id", play_id.as_str()), ("type", "0")])
-                .header("accept", "application/json, text/javascript, */*; q=0.01")
-                .header("content-type", "application/x-www-form-urlencoded; charset=UTF-8")
-                .header("origin", "https://www.gequhai.com")
-                .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                .send()
-                .await
-                .map_err(|e| format!("API request failed: {}", e))?;
+    // 提取play_id - 尝试多种格式
+    let patterns = [
+        r#"window\.appData\s*=\s*\{[^}]*"play_id"\s*:\s*"([^"]+)""#,
+        r#""play_id"\s*:\s*"([^"]+)""#,
+        r#"play_id["']\s*:\s*["']([^"']+)["']"#,
+    ];
+    
+    for pattern in &patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            if let Some(captures) = re.captures(&html) {
+                if let Some(play_id) = captures.get(1) {
+                    let api_response = client.post("https://www.gequhai.com/api/music")
+                        .form(&[("id", play_id.as_str()), ("type", "0")])
+                        .header("accept", "application/json, text/javascript, */*; q=0.01")
+                        .header("content-type", "application/x-www-form-urlencoded; charset=UTF-8")
+                        .header("origin", "https://www.gequhai.com")
+                        .header("referer", &play_url)
+                        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                        .send()
+                        .await
+                        .map_err(|e| format!("API request failed: {}", e))?;
 
-            let api_json: serde_json::Value = api_response.json()
-                .await
-                .map_err(|e| format!("Parse API response failed: {}", e))?;
+                    let api_json: serde_json::Value = api_response.json()
+                        .await
+                        .map_err(|e| format!("Parse API response failed: {}", e))?;
 
-            if let Some(url) = api_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
-                return Ok(url.to_string());
+                    if let Some(url) = api_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+                        return Ok(url.to_string());
+                    }
+                }
             }
         }
     }
@@ -749,18 +777,23 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
 
     // 获取歌曲详情
     let search_switch = r#"{"song": 1, "album": 0, "singer": 0, "tagSong": 1, "mvSong": 0, "bestShow": 1}"#;
+    let encoded_switch = utf8_percent_encode(search_switch, NON_ALPHANUMERIC);
     let params = format!(
         "text={}&pageNo=1&pageSize=1&isCopyright=1&sort=1&searchSwitch={}",
         content_id,
-        utf8_percent_encode(search_switch, NON_ALPHANUMERIC)
+        encoded_switch
     );
     
     let response = client.get(&format!("https://c.musicapp.migu.cn/v1.0/content/search_all.do?{}", params))
         .header("accept", "application/json, text/plain, */*")
+        .header("accept-encoding", "gzip, deflate, br, zstd")
+        .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
         .header("activityid", "v4_zt_2022_music")
         .header("appid", "ce")
         .header("channel", "014X031")
+        .header("connection", "keep-alive")
         .header("origin", "https://y.migu.cn")
+        .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
@@ -775,11 +808,17 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
         .and_then(|r| r.as_array())
         .and_then(|arr| arr.first()) {
         
-        if let Some(rate_formats) = song.get("rateFormats").and_then(|v| v.as_array()) {
-            if let Some(first_format) = rate_formats.first() {
+        // 尝试newRateFormats，然后是rateFormats
+        let rate_formats = song.get("newRateFormats")
+            .and_then(|v| v.as_array())
+            .or_else(|| song.get("rateFormats").and_then(|v| v.as_array()));
+        
+        if let Some(rate_formats) = rate_formats {
+            // 按质量排序，选择最好的
+            for rate in rate_formats {
                 if let (Some(format_type), Some(resource_type)) = (
-                    first_format.get("formatType").and_then(|v| v.as_str()),
-                    first_format.get("resourceType").and_then(|v| v.as_str())
+                    rate.get("formatType").and_then(|v| v.as_str()),
+                    rate.get("resourceType").and_then(|v| v.as_str())
                 ) {
                     let listen_url = format!(
                         "https://c.musicapp.migu.cn/MIGUM3.0/strategy/listen-url/v2.4?resourceType={}&netType=01&scene=&toneFlag={}&contentId={}&copyrightId={}&lowerQualityContentId={}",
@@ -788,6 +827,10 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
                     
                     let listen_response = client.get(&listen_url)
                         .header("accept", "application/json, text/plain, */*")
+                        .header("activityid", "v4_zt_2022_music")
+                        .header("appid", "ce")
+                        .header("channel", "014X031")
+                        .header("origin", "https://y.migu.cn")
                         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                         .send()
                         .await
@@ -798,6 +841,13 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
                         .map_err(|e| format!("Parse listen response failed: {}", e))?;
 
                     if let Some(url) = listen_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+                        return Ok(url.to_string());
+                    }
+                    
+                    // 如果data.url不存在，尝试data.androidUrl或iosUrl
+                    if let Some(url) = listen_json.get("data")
+                        .and_then(|d| d.get("androidUrl").or_else(|| d.get("iosUrl")))
+                        .and_then(|v| v.as_str()) {
                         return Ok(url.to_string());
                     }
                 }
