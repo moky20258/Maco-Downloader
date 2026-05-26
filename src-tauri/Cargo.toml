@@ -18,6 +18,8 @@ url = "2"
 percent-encoding = "2"
 anyhow = "1"
 tauri-plugin-shell = "2"
+scraper = "0.18"
+regex = "1"
 
 [features]
 default = ["custom-protocol"]

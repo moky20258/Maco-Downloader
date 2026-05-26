@@ -653,13 +653,12 @@ export default function Home() {
               { id: 'jianbin-netease', name: '煎饼-网易' },
               { id: 'jianbin-qq', name: '煎饼-qq' },
               { id: 'jianbin-kugou', name: '煎饼-酷狗' },
-              { id: 'jianbin-kuwo', name: '煎饼-酷我' }
-              // TODO: 后续实现 gequbao、gequhai、qqmp3、migu、livepoo 后取消注释
-              // { id: 'gequbao', name: '歌曲宝' },
-              // { id: 'gequhai', name: '歌曲海' },
-              // { id: 'qqmp3', name: 'QQMP3' },
-              // { id: 'migu', name: '咪咕' },
-              // { id: 'livepoo', name: '力音' },
+              { id: 'jianbin-kuwo', name: '煎饼-酷我' },
+              { id: 'gequbao', name: '歌曲宝' },
+              { id: 'gequhai', name: '歌曲海' },
+              { id: 'qqmp3', name: 'QQMP3' },
+              { id: 'migu', name: '咪咕' },
+              { id: 'livepoo', name: '力音' },
             ].map((p) => (
               <button
                 key={p.id}
