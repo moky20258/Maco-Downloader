@@ -95,6 +95,28 @@ export function UpdateChecker() {
     return false;
   };
 
+  const handleDownload = async () => {
+    const url = getDownloadUrl();
+    if (!url) {
+      console.error("No download URL available");
+      return;
+    }
+
+    console.log("Opening download URL:", url);
+
+    // 使用window.open在默认浏览器中打开下载链接
+    // 在Tauri中，这会打开系统默认浏览器并开始下载
+    const newWindow = window.open(url, "_blank");
+    
+    if (!newWindow) {
+      // 如果弹窗被阻止，提示用户
+      console.error("Popup blocked, please allow popups for this app");
+      alert("下载链接已被阻止，请允许弹窗后重试，或手动访问GitHub Releases页面下载");
+    }
+    
+    setShowModal(false);
+  };
+
   const getDownloadUrl = (): string => {
     if (!latestRelease) return "";
 
@@ -211,16 +233,13 @@ export function UpdateChecker() {
 
               {/* Action Buttons */}
               <div className="flex gap-3 pt-2">
-                <a
-                  href={getDownloadUrl()}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <button
+                  onClick={handleDownload}
                   className="flex-1 py-3 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                  onClick={() => setShowModal(false)}
                 >
                   <Download className="w-4 h-4" />
                   立即下载
-                </a>
+                </button>
                 <button
                   onClick={() => setShowModal(false)}
                   className="py-3 px-4 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-medium text-sm transition-colors"
