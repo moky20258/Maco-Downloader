@@ -2,9 +2,15 @@ name: 'Tauri Build'
 
 on:
   push:
+    branches: [ main, master ]
     tags:
       - 'v*'
   workflow_dispatch:
+
+# 防止重复触发：同一分支的多次推送会取消之前的构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-tauri:
@@ -56,19 +62,31 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Update version from tag
+      - name: Get version from tauri.conf.json
+        id: get_version
+        shell: bash
+        run: |
+          # 从 tauri.conf.json 读取版本号
+          if command -v jq &> /dev/null; then
+            VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          else
+            VERSION=$(grep -o '"version": *"[^"]*"' src-tauri/tauri.conf.json | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using version from tauri.conf.json: $VERSION"
+
+      - name: Update version from tag (if tag push)
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          # 从 git tag 中提取版本号（去除 v 前缀）
+          # 如果是 tag 推送，使用 tag 版本号覆盖
           VERSION=${GITHUB_REF#refs/tags/v}
-          echo "Updating version to: $VERSION"
+          echo "Tag push detected, updating version to: $VERSION"
           
           # 更新 tauri.conf.json
           if command -v jq &> /dev/null; then
             jq ".version = \"$VERSION\"" src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
           else
-            # 如果没有 jq，使用 sed
             sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
           fi
           
@@ -79,8 +97,7 @@ jobs:
             sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
           fi
           
-          echo "Version updated successfully"
-          cat src-tauri/tauri.conf.json | grep version
+          echo "Version updated to: $VERSION"
 
       - name: Build Frontend
         run: npm run build
@@ -95,6 +112,10 @@ jobs:
           args: ${{ matrix.args }}
           projectPath: '.'
           appName: maco-music
+          # 禁用 tauri-action 自动创建 Release，由后面的 job 统一处理
+          releaseBody: ''
+          releaseDraft: false
+          prerelease: false
 
       - name: Upload artifacts (Windows)
         if: matrix.platform == 'windows-latest'
@@ -127,18 +148,37 @@ jobs:
   create-release:
     needs: build-tauri
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    # tag 推送或 main/master 分支推送时都创建 Release
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tauri.conf.json
+        id: get_version
+        shell: bash
+        run: |
+          if command -v jq &> /dev/null; then
+            VERSION=$(jq -r '.version' src-tauri/tauri.conf.json)
+          else
+            VERSION=$(grep -o '"version": *"[^"]*"' src-tauri/tauri.conf.json | head -1 | sed 's/.*"\([^"]*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION"
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+        continue-on-error: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: v${{ steps.get_version.outputs.version }}
+          name: Release v${{ steps.get_version.outputs.version }}
           files: |
             artifacts/**/*.exe
             artifacts/**/*.msi
@@ -149,5 +189,8 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          # 如果 tag 已存在，则更新 Release 而不是失败
+          allowUpdates: true
+          updateOnlyUnreleased: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
