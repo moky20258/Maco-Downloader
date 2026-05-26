@@ -612,6 +612,7 @@ async fn get_gequbao_play_url(client: &Client, id: &str) -> Result<String, Strin
     let page_url = format!("https://www.gequbao.com/music/{}", id);
     let response = client.get(&page_url)
         .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
         .header("referer", "https://www.gequbao.com/")
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
@@ -622,17 +623,63 @@ async fn get_gequbao_play_url(client: &Client, id: &str) -> Result<String, Strin
         .await
         .map_err(|e| format!("Read response failed: {}", e))?;
 
-    // 使用正则提取play_id
-    let re = Regex::new(r#"window\.appData\s*=\s*JSON\.parse\("([^"]+)"\)"#).map_err(|e| format!("Regex failed: {}", e))?;
-    if let Some(captures) = re.captures(&html) {
-        if let Some(json_str) = captures.get(1) {
-            // 解码JSON字符串
-            let decoded = json_str.as_str().replace("\\\"", "\"");
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decoded) {
-                if let Some(play_id) = json.get("play_id").and_then(|v| v.as_str()) {
+    // 尝试多种格式提取appData
+    let patterns = [
+        // JSON.parse格式
+        r#"window\.appData\s*=\s*JSON\.parse\((['"])([\s\S]*?)\1\)"#,
+        // 直接对象格式
+        r#"window\.appData\s*=\s*(\{[\s\S]*?\})\s*;"#,
+        // play_id的直接匹配
+        r#""play_id"\s*:\s*"([^"]+)""#,
+    ];
+    
+    for pattern in &patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            if let Some(captures) = re.captures(&html) {
+                let play_id = if captures.len() > 2 {
+                    // JSON.parse格式，需要解码字符串
+                    if let Some(json_str_match) = captures.get(2) {
+                        let json_str = json_str_match.as_str();
+                        // 尝试解码JS字符串
+                        let decoded = json_str.replace("\\\"", "\"")
+                            .replace("\\\\", "\\")
+                            .replace("\\n", "\n")
+                            .replace("\\t", "\t");
+                        
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&decoded) {
+                            json.get("play_id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else if captures.len() == 2 {
+                    // 直接对象或直接匹配
+                    if let Some(matched_capture) = captures.get(1) {
+                        let matched = matched_capture.as_str();
+                        if matched.starts_with('{') {
+                            // JSON对象格式
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(matched) {
+                                json.get("play_id").and_then(|v| v.as_str()).map(|s| s.to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            // 直接play_id
+                            Some(matched.to_string())
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                
+                if let Some(play_id) = play_id {
                     // 调用API获取播放URL
                     let api_response = client.post("https://www.gequbao.com/api/play-url")
-                        .form(&[("id", play_id)])
+                        .form(&[("id", play_id.as_str())])
                         .header("accept", "application/json, text/javascript, */*; q=0.01")
                         .header("content-type", "application/x-www-form-urlencoded; charset=UTF-8")
                         .header("origin", "https://www.gequbao.com")
@@ -642,15 +689,24 @@ async fn get_gequbao_play_url(client: &Client, id: &str) -> Result<String, Strin
                         .await
                         .map_err(|e| format!("API request failed: {}", e))?;
 
-                    let api_json: serde_json::Value = api_response.json()
+                    let text = api_response.text()
                         .await
+                        .map_err(|e| format!("Read API response failed: {}", e))?;
+                    
+                    eprintln!("Gequbao API response: {}", &text[..text.len().min(200)]);
+
+                    let api_json: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|e| format!("Parse API response failed: {}", e))?;
 
                     if api_json.get("code").and_then(|v| v.as_i64()) == Some(1) {
                         if let Some(url) = api_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
                             return Ok(url.to_string());
                         }
+                    } else if let Some(msg) = api_json.get("msg").and_then(|v| v.as_str()) {
+                        eprintln!("Gequbao API error: {}", msg);
                     }
+                    
+                    break;
                 }
             }
         }
@@ -666,6 +722,7 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
         .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
         .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
         .header("referer", "https://www.gequhai.com/")
+        .header("upgrade-insecure-requests", "1")
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
@@ -680,6 +737,7 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
         r#"window\.appData\s*=\s*\{[^}]*"play_id"\s*:\s*"([^"]+)""#,
         r#""play_id"\s*:\s*"([^"]+)""#,
         r#"play_id["']\s*:\s*["']([^"']+)["']"#,
+        r#"data-play-id["']\s*=\s*["']([^"']+)["']"#,
     ];
     
     for pattern in &patterns {
@@ -697,13 +755,20 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
                         .await
                         .map_err(|e| format!("API request failed: {}", e))?;
 
-                    let api_json: serde_json::Value = api_response.json()
+                    let text = api_response.text()
                         .await
+                        .map_err(|e| format!("Read API response failed: {}", e))?;
+                    
+                    eprintln!("Gequhai API response: {}", &text[..text.len().min(200)]);
+
+                    let api_json: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|e| format!("Parse API response failed: {}", e))?;
 
                     if let Some(url) = api_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
                         return Ok(url.to_string());
                     }
+                    
+                    break;
                 }
             }
         }
