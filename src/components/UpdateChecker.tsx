@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Download, X, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { Download, X, AlertCircle, CheckCircle, Loader2, Copy, ExternalLink } from "lucide-react";
 import { isTauri } from "@/lib/tauri-api";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 
 interface GitHubRelease {
   tag_name: string;
@@ -25,6 +26,8 @@ export function UpdateChecker() {
   const [showModal, setShowModal] = useState(false);
   const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
   const [currentVersion, setCurrentVersion] = useState("0.0.0");
+  const [downloadUrl, setDownloadUrl] = useState("");
+  const [copied, setCopied] = useState(false);
 
   // 获取应用当前版本号
   useEffect(() => {
@@ -102,19 +105,51 @@ export function UpdateChecker() {
       return;
     }
 
-    console.log("Opening download URL:", url);
+    console.log("Download URL:", url);
 
-    // 使用window.open在默认浏览器中打开下载链接
-    // 在Tauri中，这会打开系统默认浏览器并开始下载
-    const newWindow = window.open(url, "_blank");
-    
-    if (!newWindow) {
-      // 如果弹窗被阻止，提示用户
-      console.error("Popup blocked, please allow popups for this app");
-      alert("下载链接已被阻止，请允许弹窗后重试，或手动访问GitHub Releases页面下载");
+    // 在Tauri环境中，使用shell API打开浏览器
+    if (isTauri()) {
+      try {
+        // 使用Tauri的shell插件在默认浏览器中打开链接
+        await invoke('plugin:shell|open', { path: url });
+        console.log("Opened in browser successfully");
+      } catch (error) {
+        console.error("Failed to open browser:", error);
+        // 如果shell API失败，显示下载链接让用户手动复制
+        setDownloadUrl(url);
+      }
+    } else {
+      // 非Tauri环境（开发环境），使用window.open
+      window.open(url, '_blank');
     }
-    
-    setShowModal(false);
+  };
+
+  const handleCopyUrl = async () => {
+    const url = downloadUrl || getDownloadUrl();
+    if (!url) return;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error("Failed to copy:", error);
+      // 降级方案：创建临时textarea
+      const textarea = document.createElement('textarea');
+      textarea.value = url;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) {
+        console.error("Copy failed:", err);
+      }
+      document.body.removeChild(textarea);
+    }
   };
 
   const getDownloadUrl = (): string => {
@@ -232,17 +267,52 @@ export function UpdateChecker() {
               )}
 
               {/* Action Buttons */}
-              <div className="flex gap-3 pt-2">
+              <div className="space-y-3 pt-2">
+                {/* 主下载按钮 */}
                 <button
                   onClick={handleDownload}
-                  className="flex-1 py-3 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                  className="w-full py-3 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Download className="w-4 h-4" />
                   立即下载
                 </button>
+
+                {/* 下载链接显示和复制 */}
+                {downloadUrl && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      或手动复制下载链接：
+                    </p>
+                    <div className="flex gap-2">
+                      <div className="flex-1 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+                        <p className="text-xs text-slate-600 dark:text-slate-400 truncate font-mono">
+                          {downloadUrl}
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleCopyUrl}
+                        className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors flex items-center gap-1"
+                      >
+                        {copied ? (
+                          <>
+                            <CheckCircle className="w-4 h-4 text-green-500" />
+                            <span className="text-xs">已复制</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-4 h-4" />
+                            <span className="text-xs">复制</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 稍后再说按钮 */}
                 <button
                   onClick={() => setShowModal(false)}
-                  className="py-3 px-4 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-medium text-sm transition-colors"
+                  className="w-full py-3 px-4 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl font-medium text-sm transition-colors"
                 >
                   稍后再说
                 </button>

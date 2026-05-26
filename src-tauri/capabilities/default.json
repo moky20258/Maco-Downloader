@@ -1,9 +1,10 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for Coco Downloader",
+  "description": "Default capabilities for Maco Music",
   "local": true,
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "shell:allow-open"
   ]
 }
