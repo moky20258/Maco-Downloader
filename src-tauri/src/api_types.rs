@@ -15,6 +15,7 @@ pub struct MusicItem {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)] // 为将来扩展预留
 pub struct PlayInfo {
     pub url: String,
     #[serde(rename = "type")]
@@ -36,6 +37,7 @@ pub struct UrlResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)] // 为将来扩展预留
 pub struct ErrorResponse {
     pub error: String,
 }

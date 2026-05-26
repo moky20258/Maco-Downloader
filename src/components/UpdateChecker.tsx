@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Download, X, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { isTauri } from "@/lib/tauri-api";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface GitHubRelease {
   tag_name: string;
@@ -23,7 +24,22 @@ export function UpdateChecker() {
   const [checking, setChecking] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [latestRelease, setLatestRelease] = useState<GitHubRelease | null>(null);
-  const [currentVersion] = useState("0.1.0");
+  const [currentVersion, setCurrentVersion] = useState("0.0.0");
+
+  // 获取应用当前版本号
+  useEffect(() => {
+    const loadVersion = async () => {
+      try {
+        if (isTauri()) {
+          const version = await getVersion();
+          setCurrentVersion(version);
+        }
+      } catch (error) {
+        console.error("Failed to get app version:", error);
+      }
+    };
+    loadVersion();
+  }, []);
 
   const checkForUpdates = async () => {
     if (checking) return;

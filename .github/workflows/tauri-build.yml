@@ -56,6 +56,32 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Update version from tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          # 从 git tag 中提取版本号（去除 v 前缀）
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Updating version to: $VERSION"
+          
+          # 更新 tauri.conf.json
+          if command -v jq &> /dev/null; then
+            jq ".version = \"$VERSION\"" src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+          else
+            # 如果没有 jq，使用 sed
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+          fi
+          
+          # 更新 package.json
+          if command -v jq &> /dev/null; then
+            jq ".version = \"$VERSION\"" package.json > tmp.json && mv tmp.json package.json
+          else
+            sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" package.json
+          fi
+          
+          echo "Version updated successfully"
+          cat src-tauri/tauri.conf.json | grep version
+
       - name: Build Frontend
         run: npm run build
 

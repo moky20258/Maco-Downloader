@@ -200,32 +200,20 @@ export default function Home() {
           .then(() => setPlaying(true))
           .catch(e => {
             console.error("Play failed", e);
-            const nextIndex = getNextIndexById(item.id);
-            if (nextIndex >= 0) {
-              handlePlay(results[nextIndex]);
-            } else {
-              setActiveMusic(null);
-              setPlaying(false);
-            }
+            // 播放失败时，自动跳过到下一首
+            console.warn(`歌曲《${item.title}》播放失败，自动跳过`);
+            handleNext();
           });
       } else {
-        const nextIndex = getNextIndexById(item.id);
-        if (nextIndex >= 0) {
-          handlePlay(results[nextIndex]);
-        } else {
-          setActiveMusic(null);
-          setPlaying(false);
-        }
+        // 获取URL失败，自动跳过
+        console.warn(`无法获取《${item.title}》的播放链接，自动跳过`);
+        handleNext();
       }
     } catch (err) {
       console.error(err);
-      const nextIndex = getNextIndexById(item.id);
-      if (nextIndex >= 0) {
-        handlePlay(results[nextIndex]);
-      } else {
-        setActiveMusic(null);
-        setPlaying(false);
-      }
+      // 发生错误，自动跳过
+      console.warn(`播放《${item.title}》时发生错误，自动跳过`);
+      handleNext();
     }
   };
 
@@ -659,17 +647,19 @@ export default function Home() {
           </div>
           <div className="flex justify-center mb-6 gap-3 flex-wrap">
             {[
-              { id: 'gequbao', name: '歌曲宝' },
-              { id: 'gequhai', name: '歌曲海' },
+              // 暂时只显示已实现的provider
               { id: 'bugu', name: '布谷' },
               { id: 'qq', name: 'QQ音乐' },
-              { id: 'qqmp3', name: 'QQMP3' },
-              { id: 'migu', name: '咪咕' },
-              { id: 'livepoo', name: '力音' },
               { id: 'jianbin-netease', name: '煎饼-网易' },
               { id: 'jianbin-qq', name: '煎饼-qq' },
               { id: 'jianbin-kugou', name: '煎饼-酷狗' },
               { id: 'jianbin-kuwo', name: '煎饼-酷我' }
+              // TODO: 后续实现 gequbao、gequhai、qqmp3、migu、livepoo 后取消注释
+              // { id: 'gequbao', name: '歌曲宝' },
+              // { id: 'gequhai', name: '歌曲海' },
+              // { id: 'qqmp3', name: 'QQMP3' },
+              // { id: 'migu', name: '咪咕' },
+              // { id: 'livepoo', name: '力音' },
             ].map((p) => (
               <button
                 key={p.id}
