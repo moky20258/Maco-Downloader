@@ -13,6 +13,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 测试job - 用于验证CI/CD是否正常工作
+  test-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test trigger
+        run: |
+          echo "✅ CI/CD is working!"
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref }}"
+
+
   build-tauri:
     strategy:
       fail-fast: false
