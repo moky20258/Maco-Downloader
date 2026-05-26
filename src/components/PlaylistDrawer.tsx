@@ -6,6 +6,24 @@ import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MusicItem } from "@/types/music";
 
+// 获取音乐源中文名称
+const getProviderName = (provider: string): string => {
+  const providerMap: Record<string, string> = {
+    'bugu': '布谷',
+    'qq': 'QQ',
+    'jianbin-netease': '网易',
+    'jianbin-qq': 'QQ',
+    'jianbin-kugou': '酷狗',
+    'jianbin-kuwo': '酷我',
+    'gequbao': '歌曲宝',
+    'gequhai': '歌曲海',
+    'qqmp3': 'QQMP3',
+    'migu': '咪咕',
+    'livepoo': '力音',
+  };
+  return providerMap[provider] || provider;
+};
+
 interface PlaylistDrawerProps {
   isOpen: boolean;
   onClose: () => void;
@@ -147,9 +165,15 @@ export function PlaylistDrawer({
                           )}>
                             {item.title}
                           </p>
-                          <p className="text-xs text-slate-400 dark:text-slate-500 truncate">
-                            {item.artist}
-                          </p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs text-slate-400 dark:text-slate-500 truncate">
+                              {item.artist}
+                            </p>
+                            {/* 来源标签 */}
+                            <span className="flex-shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border border-slate-200 dark:border-slate-700">
+                              {getProviderName(item.provider)}
+                            </span>
+                          </div>
                         </div>
 
                         {/* Sort Buttons */}
