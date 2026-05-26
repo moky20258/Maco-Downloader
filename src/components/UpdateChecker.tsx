@@ -46,6 +46,12 @@ export function UpdateChecker() {
     
     setChecking(true);
     try {
+      // 确保已获取当前版本号
+      if (currentVersion === "0.0.0") {
+        console.log("Version not loaded yet, skipping update check");
+        return;
+      }
+
       const response = await fetch(
         "https://api.github.com/repos/moky20258/Maco-Downloader/releases/latest"
       );
@@ -58,11 +64,16 @@ export function UpdateChecker() {
       const release: GitHubRelease = await response.json();
       const latestVersion = release.tag_name.replace(/^v/, "");
 
-      // 比较版本号
+      console.log(`Version check - Current: ${currentVersion}, Latest: ${latestVersion}`);
+
+      // 比较版本号（相同版本不提示更新）
       if (isNewerVersion(latestVersion, currentVersion)) {
+        console.log("New version available!");
         setLatestRelease(release);
         setUpdateAvailable(true);
         setShowModal(true);
+      } else {
+        console.log("Already up to date");
       }
     } catch (error) {
       console.error("Error checking for updates:", error);
@@ -116,14 +127,14 @@ export function UpdateChecker() {
   useEffect(() => {
     // 仅在Tauri环境中自动检查更新
     if (isTauri()) {
-      // 启动后延迟检查，避免影响加载体验
+      // 启动后延迟检查，确保版本号已加载
       const timer = setTimeout(() => {
         checkForUpdates();
-      }, 3000);
+      }, 5000); // 增加到5秒，确保版本号已加载
 
       return () => clearTimeout(timer);
     }
-  }, []);
+  }, [currentVersion]); // 依赖currentVersion，确保版本号加载后再检查
 
   if (!updateAvailable && !checking) return null;
 
