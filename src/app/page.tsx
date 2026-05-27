@@ -812,7 +812,7 @@ export default function Home() {
               // { id: 'gequbao', name: '歌曲宝' }, // 暂时隐藏
               // { id: 'gequhai', name: '歌曲海' }, // 暂时隐藏
               { id: 'qqmp3', name: 'QQMP3' },
-              { id: 'migu', name: '咪咕' },
+              // { id: 'migu', name: '咪咕' }, // 暂时隐藏（版权限制201007）
               { id: 'livepoo', name: '力音' },
             ].map((p) => (
               <button

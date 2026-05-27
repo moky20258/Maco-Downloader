@@ -334,48 +334,65 @@ async fn search_bugu(client: &Client, query: &str) -> Result<SearchResponse, Str
 }
 
 async fn search_qq(client: &Client, query: &str) -> Result<SearchResponse, String> {
-    let response = client.get(&format!("{}/v2/music/tencent/search/song", VKEYS_BASE))
-        .query(&[("word", query)])
-        .header("accept", "application/json, text/plain, */*")
-        .header("origin", "https://y.qq.com")
-        .header("referer", "https://y.qq.com/")
-        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+    // 尝试3次，处理连接关闭问题
+    for attempt in 1..=3 {
+        let response = client.get(&format!("{}/v2/music/tencent/search/song", VKEYS_BASE))
+            .query(&[("word", query)])
+            .header("accept", "application/json, text/plain, */*")
+            .header("origin", "https://y.qq.com")
+            .header("referer", "https://y.qq.com/")
+            .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .send()
+            .await;
+        
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[QQ] Search attempt {} failed: {}", attempt, e);
+                if attempt == 3 {
+                    return Err(format!("Request failed: {}", e));
+                }
+                // 等待一段时间后重试
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                continue;
+            }
+        };
 
-    let json: serde_json::Value = response.json()
-        .await
-        .map_err(|e| format!("Parse JSON failed: {}", e))?;
+        let json: serde_json::Value = response.json()
+            .await
+            .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
-    let list = json.get("data")
-        .and_then(|d| d.as_array())
-        .ok_or("Invalid response format")?;
+        let list = json.get("data")
+            .and_then(|d| d.as_array())
+            .ok_or("Invalid response format")?;
 
-    let items: Vec<MusicItem> = list.iter()
-        .filter_map(|item| {
-            let id = item.get("mid")?.as_str()?;
-            let title = item.get("song").and_then(|v| v.as_str()).unwrap_or("未知歌曲");
-            let artist = item.get("singer").and_then(|v| v.as_str()).unwrap_or("未知歌手");
-            let album = item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let cover = item.get("cover").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let duration = item.get("duration").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let size = item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string());
-            
-            Some(MusicItem {
-                id: id.to_string(),
-                title: title.to_string(),
-                artist: artist.to_string(),
-                album,
-                cover,
-                duration,
-                size,
-                provider: "qq".to_string(),
+        let items: Vec<MusicItem> = list.iter()
+            .filter_map(|item| {
+                let id = item.get("mid")?.as_str()?;
+                let title = item.get("song").and_then(|v| v.as_str()).unwrap_or("未知歌曲");
+                let artist = item.get("singer").and_then(|v| v.as_str()).unwrap_or("未知歌手");
+                let album = item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let cover = item.get("cover").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let duration = item.get("duration").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let size = item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string());
+                
+                Some(MusicItem {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    artist: artist.to_string(),
+                    album,
+                    cover,
+                    duration,
+                    size,
+                    provider: "qq".to_string(),
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    Ok(SearchResponse { items })
+        return Ok(SearchResponse { items });
+    }
+    
+    unreachable!()
 }
 
 async fn search_qqmp3(client: &Client, query: &str) -> Result<SearchResponse, String> {
@@ -979,7 +996,7 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
 
 // 获取bugu播放URL
 async fn get_bugu_play_url(client: &Client, id: &str) -> Result<String, String> {
-    let response = client.get("https://a.buguyy.top/newapi/url.php")
+    let response = client.get("https://a.buguyy.top/newapi/geturl2.php")
         .query(&[("id", id)])
         .header("accept", "application/json, text/plain, */*")
         .header("origin", "https://buguyy.top")
@@ -989,8 +1006,15 @@ async fn get_bugu_play_url(client: &Client, id: &str) -> Result<String, String> 
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
 
-    let json: serde_json::Value = response.json()
+    // 先获取文本，以便调试
+    let text = response.text()
         .await
+        .map_err(|e| format!("Read response failed: {}", e))?;
+    
+    eprintln!("[Bugu] API response: {}", &text[..text.len().min(200)]);
+
+    // 尝试解析JSON
+    let json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
     if let Some(url) = json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
@@ -1001,9 +1025,36 @@ async fn get_bugu_play_url(client: &Client, id: &str) -> Result<String, String> 
 }
 
 // 获取qq播放URL
-async fn get_qq_play_url(_client: &Client, _id: &str) -> Result<String, String> {
-    // QQ音乐需要特殊处理，这里返回示例URL
-    Err("QQ music playback not supported directly".to_string())
+async fn get_qq_play_url(client: &Client, id: &str) -> Result<String, String> {
+    // 尝试不同的音质
+    let qualities = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    
+    for quality in qualities {
+        let quality_str = quality.to_string();
+        let response = client.get("https://api.vkeys.cn/v2/music/tencent/geturl")
+            .query(&[("mid", id), ("quality", quality_str.as_str())])
+            .header("accept", "application/json, text/plain, */*")
+            .header("origin", "https://y.qq.com")
+            .header("referer", "https://y.qq.com/")
+            .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+
+        let json: serde_json::Value = response.json()
+            .await
+            .map_err(|e| format!("Parse JSON failed: {}", e))?;
+
+        if json.get("code").and_then(|v| v.as_i64()) == Some(200) {
+            if let Some(url) = json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+                if url.starts_with("http") {
+                    return Ok(url.to_string());
+                }
+            }
+        }
+    }
+    
+    Err("Failed to get play URL".to_string())
 }
 
 // 获取qqmp3播放URL
@@ -1033,8 +1084,6 @@ async fn get_qqmp3_play_url(client: &Client, id: &str) -> Result<String, String>
 
 // 获取migu播放URL
 async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> {
-    // eprintln!("[Migu] Getting play URL for id: {}", id);
-    
     let parts: Vec<&str> = id.split('_').collect();
     if parts.len() != 2 {
         eprintln!("[Migu] Invalid ID format: {}", id);
@@ -1043,37 +1092,24 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
     let content_id = parts[0];
     let copyright_id = parts[1];
     
-    // eprintln!("[Migu] content_id={}, copyright_id={}", content_id, copyright_id);
+    eprintln!("[Migu] Getting play URL: content_id={}, copyright_id={}", content_id, copyright_id);
 
-    // 获取歌曲详情
-    let search_switch = r#"{"song": 1, "album": 0, "singer": 0, "tagSong": 1, "mvSong": 0, "bestShow": 1}"#;
-    let encoded_switch = utf8_percent_encode(search_switch, NON_ALPHANUMERIC);
-    let params = format!(
-        "text={}&pageNo=1&pageSize=1&isCopyright=1&sort=1&searchSwitch={}",
-        content_id,
-        encoded_switch
+    // 第一步：搜索歌曲详情，获取rateFormats
+    let search_url = format!(
+        "https://c.musicapp.migu.cn/v1.0/content/search_all.do?text={}&pageNo=1&pageSize=1&isCopyright=1&sort=1&searchSwitch={{'song':1,'album':0,'singer':0,'tagSong':1,'mvSong':0,'bestShow':1}}",
+        content_id
     );
     
-    eprintln!("[Migu] Request URL: https://c.musicapp.migu.cn/v1.0/content/search_all.do?{}", params);
+    eprintln!("[Migu] Searching for song details");
     
-    let response = client.get(&format!("https://c.musicapp.migu.cn/v1.0/content/search_all.do?{}", params))
+    let search_response = client.get(&search_url)
         .header("accept", "application/json, text/plain, */*")
         .header("accept-encoding", "gzip, deflate, br, zstd")
         .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
         .header("activityid", "v4_zt_2022_music")
         .header("appid", "ce")
         .header("channel", "014X031")
-        .header("connection", "keep-alive")
         .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
-        .header("hwid", "")
-        .header("imei", "")
-        .header("h5page", "")
-        .header("imsi", "")
-        .header("location-info", "")
-        .header("mgm-user-agent", "")
-        .header("oaid", "")
-        .header("uid", "")
-        .header("location-data", "")
         .header("logid", "h5page[1808]")
         .header("mgm-network-operators", "02")
         .header("mgm-network-standard", "03")
@@ -1094,133 +1130,153 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}", e))?;
+        .map_err(|e| format!("Search request failed: {}", e))?;
 
-    let json: serde_json::Value = response.json()
+    let search_json: serde_json::Value = search_response.json()
         .await
-        .map_err(|e| format!("Parse JSON failed: {}", e))?;
+        .map_err(|e| format!("Parse search JSON failed: {}", e))?;
 
-    if let Some(song) = json.get("songResultData")
+    // 获取歌曲列表
+    let songs = search_json.get("songResultData")
         .and_then(|d| d.get("result"))
         .and_then(|r| r.as_array())
-        .and_then(|arr| arr.first()) {
+        .ok_or("No songs found")?;
+    
+    if songs.is_empty() {
+        return Err("Song not found".to_string());
+    }
+    
+    let song = &songs[0];
+    
+    // 获取rateFormats和newRateFormats
+    let mut rate_formats = Vec::new();
+    if let Some(formats) = song.get("rateFormats").and_then(|f| f.as_array()) {
+        rate_formats.extend(formats.iter().cloned());
+    }
+    if let Some(formats) = song.get("newRateFormats").and_then(|f| f.as_array()) {
+        rate_formats.extend(formats.iter().cloned());
+    }
+    
+    if rate_formats.is_empty() {
+        return Err("No rate formats found".to_string());
+    }
+    
+    eprintln!("[Migu] Found {} rate formats", rate_formats.len());
+    
+    // 尝试每个音质格式
+    for rate in &rate_formats {
+        let format_type = rate.get("formatType").and_then(|v| v.as_str()).unwrap_or("");
+        let resource_type = rate.get("resourceType").and_then(|v| v.as_str()).unwrap_or("");
         
-        // 合并rateFormats和newRateFormats - 使用前端的相同逻辑
-        let mut rate_formats: Vec<serde_json::Value> = Vec::new();
-        
-        if let Some(rf) = song.get("rateFormats").and_then(|v| v.as_array()) {
-            rate_formats.extend(rf.clone());
+        if format_type.is_empty() || resource_type.is_empty() {
+            continue;
         }
-        if let Some(nrf) = song.get("newRateFormats").and_then(|v| v.as_array()) {
-            rate_formats.extend(nrf.clone());
-        }
         
-        // eprintln!("[Migu] Found {} rate formats", rate_formats.len());
+        eprintln!("[Migu] Trying: format_type={}, resource_type={}", format_type, resource_type);
         
-        // 按质量排序
-        rate_formats.sort_by(|a, b| {
-            let size_a = a.get("size").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let size_b = b.get("size").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            size_b.partial_cmp(&size_a).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let listen_url = format!(
+            "https://c.musicapp.migu.cn/MIGUM3.0/strategy/listen-url/v2.4?resourceType={}&netType=01&scene=&toneFlag={}&contentId={}&copyrightId={}&lowerQualityContentId={}",
+            resource_type, format_type, content_id, copyright_id, content_id
+        );
         
-        for rate in &rate_formats {
-            if let (Some(format_type), Some(resource_type)) = (
-                rate.get("formatType").and_then(|v| v.as_str()),
-                rate.get("resourceType").and_then(|v| v.as_str())
-            ) {
-                eprintln!("[Migu] Trying format_type={}, resource_type={}", format_type, resource_type);
-                
-                let listen_url = format!(
-                    "https://c.musicapp.migu.cn/MIGUM3.0/strategy/listen-url/v2.4?resourceType={}&netType=01&scene=&toneFlag={}&contentId={}&copyrightId={}&lowerQualityContentId={}",
-                    resource_type, format_type, content_id, copyright_id, content_id
-                );
-                
-                let listen_response = client.get(&listen_url)
-                    .header("accept", "application/json, text/plain, */*")
-                    .header("accept-encoding", "gzip, deflate, br, zstd")
-                    .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
-                    .header("activityid", "v4_zt_2022_music")
-                    .header("appid", "ce")
-                    .header("channel", "014X031")
-                    .header("connection", "keep-alive")
-                    .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
-                    .header("host", "c.musicapp.migu.cn")
-                    .header("hwid", "")
-                    .header("imei", "")
-                    .header("h5page", "")
-                    .header("imsi", "")
-                    .header("location-info", "")
-                    .header("mgm-user-agent", "")
-                    .header("oaid", "")
-                    .header("uid", "")
-                    .header("location-data", "")
-                    .header("logid", "h5page[1808]")
-                    .header("mgm-network-operators", "02")
-                    .header("mgm-network-standard", "03")
-                    .header("mgm-network-type", "03")
-                    .header("origin", "https://y.migu.cn")
-                    .header("recommendstatus", "1")
-                    .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
-                    .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
-                    .header("sec-ch-ua-mobile", "?0")
-                    .header("sec-ch-ua-platform", "\"Windows\"")
-                    .header("sec-fetch-dest", "empty")
-                    .header("sec-fetch-mode", "cors")
-                    .header("sec-fetch-site", "same-site")
-                    .header("subchannel", "014X031")
-                    .header("test", "00")
-                    .header("ua", "Android_migu")
-                    .header("version", "6.8.8")
-                    .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
-                    .send()
-                    .await
-                    .map_err(|e| format!("Listen request failed: {}", e))?;
+        let response = client.get(&listen_url)
+            .header("accept", "application/json, text/plain, */*")
+            .header("accept-encoding", "gzip, deflate, br, zstd")
+            .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+            .header("activityid", "v4_zt_2022_music")
+            .header("appid", "ce")
+            .header("channel", "014X031")
+            .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
+            .header("logid", "h5page[1808]")
+            .header("mgm-network-operators", "02")
+            .header("mgm-network-standard", "03")
+            .header("mgm-network-type", "03")
+            .header("origin", "https://y.migu.cn")
+            .header("recommendstatus", "1")
+            .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
+            .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+            .header("sec-ch-ua-mobile", "?0")
+            .header("sec-ch-ua-platform", "\"Windows\"")
+            .header("sec-fetch-dest", "empty")
+            .header("sec-fetch-mode", "cors")
+            .header("sec-fetch-site", "same-site")
+            .header("subchannel", "014X031")
+            .header("test", "00")
+            .header("ua", "Android_migu")
+            .header("version", "6.8.8")
+            .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
 
-                let listen_json: serde_json::Value = listen_response.json()
-                    .await
-                    .map_err(|e| format!("Parse listen response failed: {}", e))?;
+        let json: serde_json::Value = response.json()
+            .await
+            .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
-                eprintln!("[Migu] Listen response code: {}", listen_json.get("code").and_then(|c| c.as_str()).unwrap_or("unknown"));
+        let code = json.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+        eprintln!("[Migu] Response code: {}", code);
 
-                if let Some(url) = listen_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
-                    return Ok(url.to_string());
+        if json.get("code").and_then(|v| v.as_i64()) == Some(200) {
+            if let Some(url) = json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+                if url.starts_with("http") {
+                    // 修复URL中的品质路径
+                    let fixed_url = url.replace("MP3_128_16_Stero", "MP3_320_16_Stero");
+                    eprintln!("[Migu] Success: {}", &fixed_url[..fixed_url.len().min(100)]);
+                    return Ok(fixed_url);
                 }
-                
-                if let Some(url) = listen_json.get("data")
-                    .and_then(|d| d.get("androidUrl").or_else(|| d.get("iosUrl")))
-                    .and_then(|v| v.as_str()) {
-                    return Ok(url.to_string());
-                }
-                
-                // Fallback: 使用备用API
-                eprintln!("[Migu] Primary API failed, trying fallback...");
-                let fallback_url = format!(
-                    "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenSong.do?channel=mx&copyrightId={}&contentId={}&toneFlag={}&resourceType={}&userId=15548614588710179085069&netType=00",
-                    copyright_id, content_id, format_type, resource_type
-                );
-                
-                let fallback_response = client.get(&fallback_url)
-                    .header("accept", "application/json")
-                    .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    .send()
-                    .await
-                    .map_err(|e| format!("Fallback request failed: {}", e))?;
-                
-                let fallback_json: serde_json::Value = fallback_response.json()
-                    .await
-                    .map_err(|e| format!("Parse fallback response failed: {}", e))?;
-                
-                eprintln!("[Migu] Fallback response code: {}", fallback_json.get("code").and_then(|c| c.as_str()).unwrap_or("unknown"));
-                
-                if let Some(url) = fallback_json.get("url").and_then(|v| v.as_str()) {
-                    return Ok(url.to_string());
+            }
+        } else {
+            // 尝试fallback URL
+            let fallback_url = format!(
+                "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenSong.do?channel=mx&copyrightId={}&contentId={}&toneFlag={}&resourceType={}&userId=15548614588710179085069&netType=00",
+                copyright_id, content_id, format_type, resource_type
+            );
+            
+            let fallback_response = client.get(&fallback_url)
+                .header("accept", "application/json, text/plain, */*")
+                .header("accept-encoding", "gzip, deflate, br, zstd")
+                .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+                .header("activityid", "v4_zt_2022_music")
+                .header("appid", "ce")
+                .header("channel", "014X031")
+                .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
+                .header("logid", "h5page[1808]")
+                .header("mgm-network-operators", "02")
+                .header("mgm-network-standard", "03")
+                .header("mgm-network-type", "03")
+                .header("origin", "https://y.migu.cn")
+                .header("recommendstatus", "1")
+                .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
+                .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+                .header("sec-ch-ua-mobile", "?0")
+                .header("sec-ch-ua-platform", "\"Windows\"")
+                .header("sec-fetch-dest", "empty")
+                .header("sec-fetch-mode", "cors")
+                .header("sec-fetch-site", "same-site")
+                .header("subchannel", "014X031")
+                .header("test", "00")
+                .header("ua", "Android_migu")
+                .header("version", "6.8.8")
+                .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
+                .send()
+                .await;
+            
+            if let Ok(fallback_resp) = fallback_response {
+                if let Ok(fallback_json) = fallback_resp.json::<serde_json::Value>().await {
+                    if let Some(url) = fallback_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+                        if url.starts_with("http") {
+                            let fixed_url = url.replace("MP3_128_16_Stero", "MP3_320_16_Stero");
+                            eprintln!("[Migu] Fallback success: {}", &fixed_url[..fixed_url.len().min(100)]);
+                            return Ok(fixed_url);
+                        }
+                    }
                 }
             }
         }
     }
-
-    Err("Failed to get migu play URL - no valid rate format found".to_string())
+    
+    eprintln!("[Migu] All qualities failed");
+    Err("Failed to get play URL".to_string())
 }
 
 // 获取livepoo播放URL
