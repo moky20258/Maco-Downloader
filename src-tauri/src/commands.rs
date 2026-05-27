@@ -94,6 +94,7 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
                 album: item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 cover: item.get("cover").and_then(|v| v.as_str()).map(to_absolute_url),
                 duration: None,
+                size: None,
                 provider: provider.to_string(),
             })
         })
@@ -115,11 +116,23 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
     // 访问搜索页面
     let encoded = utf8_percent_encode(query, NON_ALPHANUMERIC).to_string();
     let url = format!("https://www.gequbao.com/s/{}", encoded);
+    eprintln!("[Gequbao] Searching: {}", url);
+    
     let response = client.get(&url)
-        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
         .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .header("cache-control", "no-cache")
+        .header("pragma", "no-cache")
+        .header("priority", "u=0, i")
         .header("referer", "https://www.gequbao.com/")
-        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", "\"Windows\"")
+        .header("sec-fetch-dest", "document")
+        .header("sec-fetch-mode", "navigate")
+        .header("sec-fetch-site", "same-origin")
+        .header("upgrade-insecure-requests", "1")
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
@@ -127,12 +140,20 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
     let html = response.text()
         .await
         .map_err(|e| format!("Read response failed: {}", e))?;
-
-    // 解析HTML
-    let document = Html::parse_document(&html);
-    let link_selector = Selector::parse("a[href^=\"/music/\"]").map_err(|e| format!("Parse selector failed: {}", e))?;
     
-    let items: Vec<MusicItem> = document.select(&link_selector)
+    eprintln!("[Gequbao] Response HTML length: {}", html.len());
+    
+    // 保存HTML到文件以便分析
+    use std::fs;
+    let _ = fs::write("gequbao_debug.html", &html);
+    eprintln!("[Gequbao] HTML saved to gequbao_debug.html");
+
+    // 解析HTML - 尝试多种选择器
+    let document = Html::parse_document(&html);
+    
+    // 尝试选择器1: a[href^="/music/"]
+    let link_selector = Selector::parse("a[href^=\"/music/\"]").map_err(|e| format!("Parse selector failed: {}", e))?;
+    let mut items: Vec<MusicItem> = document.select(&link_selector)
         .filter_map(|el| {
             let href = el.value().attr("href")?;
             let re = Regex::new(r"/music/(\d+)").ok()?;
@@ -155,6 +176,8 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
                 }
             }
             
+            eprintln!("[Gequbao] Found: id={}, title={}, artist={}", id, clean_title, artist);
+            
             Some(MusicItem {
                 id: id.to_string(),
                 title: clean_title,
@@ -162,11 +185,42 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
                 album: None,
                 cover: None,
                 duration: None,
+                size: None,
                 provider: "gequbao".to_string(),
             })
         })
         .collect();
 
+    // 如果没找到，尝试其他选择器
+    if items.is_empty() {
+        eprintln!("[Gequbao] Trying alternative selectors...");
+        
+        // 选择器2: div.song-list a
+        if let Ok(selector) = Selector::parse("div.song-list a") {
+            items = document.select(&selector)
+                .filter_map(|el| {
+                    let href = el.value().attr("href")?;
+                    let re = Regex::new(r"/music/(\d+)").ok()?;
+                    let captures = re.captures(href)?;
+                    let id = captures.get(1)?.as_str();
+                    let title = el.text().collect::<Vec<_>>().join("").trim().to_string();
+                    if title.is_empty() { return None; }
+                    Some(MusicItem {
+                        id: id.to_string(),
+                        title,
+                        artist: "未知歌手".to_string(),
+                        album: None,
+                        cover: None,
+                        duration: None,
+                        size: None,
+                        provider: "gequbao".to_string(),
+                    })
+                })
+                .collect();
+        }
+    }
+
+    eprintln!("[Gequbao] Total items found: {}", items.len());
     Ok(SearchResponse { items })
 }
 
@@ -216,6 +270,7 @@ async fn search_gequhai(client: &Client, query: &str) -> Result<SearchResponse, 
                 album: None,
                 cover: None,
                 duration: None,
+                size: None,
                 provider: "gequhai".to_string(),
             })
         })
@@ -259,6 +314,8 @@ async fn search_bugu(client: &Client, query: &str) -> Result<SearchResponse, Str
             let artist = item.get("singer").and_then(|v| v.as_str()).unwrap_or("未知歌手");
             let album = item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string());
             let cover = item.get("picurl").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let duration = item.get("duration").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let size = item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string());
             
             Some(MusicItem {
                 id,
@@ -266,7 +323,8 @@ async fn search_bugu(client: &Client, query: &str) -> Result<SearchResponse, Str
                 artist: artist.to_string(),
                 album,
                 cover,
-                duration: None,
+                duration,
+                size,
                 provider: "bugu".to_string(),
             })
         })
@@ -301,6 +359,8 @@ async fn search_qq(client: &Client, query: &str) -> Result<SearchResponse, Strin
             let artist = item.get("singer").and_then(|v| v.as_str()).unwrap_or("未知歌手");
             let album = item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string());
             let cover = item.get("cover").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let duration = item.get("duration").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let size = item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string());
             
             Some(MusicItem {
                 id: id.to_string(),
@@ -308,7 +368,8 @@ async fn search_qq(client: &Client, query: &str) -> Result<SearchResponse, Strin
                 artist: artist.to_string(),
                 album,
                 cover,
-                duration: None,
+                duration,
+                size,
                 provider: "qq".to_string(),
             })
         })
@@ -358,6 +419,8 @@ async fn search_qqmp3(client: &Client, query: &str) -> Result<SearchResponse, St
             let title = item.get("name")?.as_str()?.to_string();
             let artist = item.get("artist")?.as_str().unwrap_or("未知歌手").to_string();
             let cover = item.get("pic").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let duration = item.get("duration").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let size = item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string());
             
             Some(MusicItem {
                 id,
@@ -365,7 +428,8 @@ async fn search_qqmp3(client: &Client, query: &str) -> Result<SearchResponse, St
                 artist,
                 album: None,
                 cover,
-                duration: None,
+                duration,
+                size,
                 provider: "qqmp3".to_string(),
             })
         })
@@ -442,13 +506,68 @@ async fn search_migu(client: &Client, query: &str) -> Result<SearchResponse, Str
                 .and_then(|c| c.as_str())
                 .map(|s| s.to_string());
             
+            // 提取文件大小信息（从 newRateFormats 或 rateFormats 中获取最大的 size）
+            let size = item.get("newRateFormats")
+                .or_else(|| item.get("rateFormats"))
+                .and_then(|rates| rates.as_array())
+                .map(|rates| {
+                    // 找到最大的文件大小
+                    let mut max_size: Option<String> = None;
+                    let mut max_size_mb = 0.0f64;
+                    
+                    for rate in rates {
+                        if let Some(size_val) = rate.get("size").and_then(|s| s.as_str()) {
+                            let size_str = size_val.trim();
+                            
+                            // 判断是否已经有 MB 单位
+                            if size_str.to_lowercase().contains("mb") {
+                                // 已经有 MB 单位，直接使用
+                                max_size = Some(size_str.to_string());
+                                // 提取数值用于比较
+                                let num_str = size_str.replace("MB", "").replace("mb", "").trim().to_string();
+                                if let Ok(num) = num_str.parse::<f64>() {
+                                    if num > max_size_mb {
+                                        max_size_mb = num;
+                                    }
+                                }
+                            } else {
+                                // 没有单位，可能是字节
+                                if let Ok(bytes) = size_str.parse::<f64>() {
+                                    if bytes > 0.0 {
+                                        // 如果数字很大（>1000000），认为是字节
+                                        if bytes > 1000000.0 {
+                                            let mb = bytes / (1024.0 * 1024.0);
+                                            if mb > max_size_mb {
+                                                max_size_mb = mb;
+                                                max_size = Some(format!("{:.2}MB", mb));
+                                            }
+                                        } else {
+                                            // 否则可能就是 MB 数值
+                                            if bytes > max_size_mb {
+                                                max_size_mb = bytes;
+                                                max_size = Some(format!("{}MB", bytes));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    max_size
+                })
+                .flatten();
+            
+            // 提取时长信息
+            let duration = item.get("length").and_then(|v| v.as_str()).map(|s| s.to_string());
+            
             Some(MusicItem {
                 id,
                 title,
                 artist: if artists.is_empty() { "未知歌手".to_string() } else { artists },
                 album: albums,
                 cover,
-                duration: None,
+                duration,
+                size,
                 provider: "migu".to_string(),
             })
         })
@@ -545,6 +664,7 @@ async fn search_livepoo(client: &Client, query: &str) -> Result<SearchResponse, 
                 album: None,
                 cover: None,
                 duration: None,
+                size: None,
                 provider: "livepoo".to_string(),
             })
         })
@@ -578,14 +698,29 @@ pub async fn get_music_url(id: String, provider: String) -> Result<UrlResponse, 
         }
     };
 
-    Ok(UrlResponse { url })
+    Ok(UrlResponse { url, download_only: None })
 }
 
 #[command]
 pub async fn download_music(id: String, _filename: String, provider: String) -> Result<Vec<u8>, String> {
     // 获取音乐 URL
-    let url_response = get_music_url(id, provider).await?;
-    let url = url_response.url;
+    let url_response = get_music_url(id.clone(), provider.clone()).await?;
+    let mut url = url_response.url;
+    
+    // 移除 DOWNLOAD_ONLY: 前缀（如果存在）
+    if url.starts_with("DOWNLOAD_ONLY:") {
+        url = url.replace("DOWNLOAD_ONLY:", "");
+    }
+    
+    // 检查是否为网盘链接（仅支持下载）
+    if url.contains("pan.quark.cn") || url.contains("pan.baidu.com") {
+        // 对于网盘链接，在浏览器中打开，让用户在网盘中下载
+        eprintln!("[Download] Cloud drive URL detected, opening in browser: {}", url);
+        
+        // 使用 Tauri shell 打开链接
+        // 注意：这里无法直接返回文件内容，需要前端处理
+        return Err(format!("CLOUD_DRIVE:{}", url));
+    }
     
     // 使用 reqwest 下载文件
     let client = Client::builder()
@@ -712,11 +847,13 @@ async fn get_gequbao_play_url(client: &Client, id: &str) -> Result<String, Strin
         }
     }
 
-    Err("Failed to get play URL".to_string())
+    Err(format!("Failed to get gequbao play URL - play_id not found in HTML (length: {})", html.len()))
 }
 
 // 获取gequhai播放URL
 async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, String> {
+    eprintln!("[Gequhai] Getting play URL for id: {}", id);
+    
     let play_url = format!("https://www.gequhai.com/play/{}", id);
     let response = client.get(&play_url)
         .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -731,50 +868,113 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
     let html = response.text()
         .await
         .map_err(|e| format!("Read response failed: {}", e))?;
-
-    // 提取play_id - 尝试多种格式
-    let patterns = [
-        r#"window\.appData\s*=\s*\{[^}]*"play_id"\s*:\s*"([^"]+)""#,
-        r#""play_id"\s*:\s*"([^"]+)""#,
-        r#"play_id["']\s*:\s*["']([^"']+)["']"#,
-        r#"data-play-id["']\s*=\s*["']([^"']+)["']"#,
-    ];
     
-    for pattern in &patterns {
-        if let Ok(re) = Regex::new(pattern) {
-            if let Some(captures) = re.captures(&html) {
-                if let Some(play_id) = captures.get(1) {
-                    let api_response = client.post("https://www.gequhai.com/api/music")
-                        .form(&[("id", play_id.as_str()), ("type", "0")])
-                        .header("accept", "application/json, text/javascript, */*; q=0.01")
-                        .header("content-type", "application/x-www-form-urlencoded; charset=UTF-8")
-                        .header("origin", "https://www.gequhai.com")
-                        .header("referer", &play_url)
-                        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                        .send()
-                        .await
-                        .map_err(|e| format!("API request failed: {}", e))?;
+    eprintln!("[Gequhai] Play page HTML length: {}", html.len());
 
-                    let text = api_response.text()
-                        .await
-                        .map_err(|e| format!("Read API response failed: {}", e))?;
-                    
-                    eprintln!("Gequhai API response: {}", &text[..text.len().min(200)]);
-
-                    let api_json: serde_json::Value = serde_json::from_str(&text)
-                        .map_err(|e| format!("Parse API response failed: {}", e))?;
-
-                    if let Some(url) = api_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
-                        return Ok(url.to_string());
+    // 提取appData - 使用前端的相同逻辑
+    let mut app_data: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    
+    // 尝试提取 window.appData = {...};
+    if let Ok(re) = Regex::new(r#"window\.appData\s*=\s*(\{.*?\})\s*;"#) {
+        if let Some(captures) = re.captures(&html) {
+            if let Some(json_str) = captures.get(1) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str.as_str()) {
+                    if let Some(obj) = json.as_object() {
+                        app_data.extend(obj.clone());
                     }
-                    
-                    break;
                 }
             }
         }
     }
-
-    Err("Failed to get play URL".to_string())
+    
+    // 提取 play_id 或 mp3_id
+    let play_id = app_data.get("play_id")
+        .or_else(|| app_data.get("mp3_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| id.to_string());
+    
+    eprintln!("[Gequhai] Extracted play_id: {}", play_id);
+        
+    let api_response = client.post("https://www.gequhai.com/api/music")
+        .body(format!("id={}&type=0", play_id))
+        .header("accept", "application/json, text/javascript, */*; q=0.01")
+        .header("content-type", "application/x-www-form-urlencoded; charset=UTF-8")
+        .header("origin", "https://www.gequhai.com")
+        .header("referer", &play_url)
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header("x-requested-with", "XMLHttpRequest")
+        .header("x-custom-header", "SecretKey")
+        .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", "\"Windows\"")
+        .header("sec-fetch-dest", "empty")
+        .header("sec-fetch-mode", "cors")
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .map_err(|e| format!("API request failed: {}", e))?;
+    
+    let text = api_response.text()
+        .await
+        .map_err(|e| format!("Read API response failed: {}", e))?;
+        
+    eprintln!("[Gequhai] API response length: {}", text.len());
+    eprintln!("[Gequhai] API response: {}", &text[..text.len().min(500)]);
+    
+    let api_json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| {
+            eprintln!("[Gequhai] JSON parse error: {}", e);
+            format!("Parse API response failed: {}", e)
+        })?;
+    
+    eprintln!("[Gequhai] Parsed JSON successfully");
+    
+    // 尝试提取 data.url
+    if let Some(url) = api_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+        if !url.is_empty() {
+            eprintln!("[Gequhai] Found URL in data.url: {}", url);
+            return Ok(url.to_string());
+        }
+    }
+    
+    // Fallback: 提取 mp3_extra_url 并解码
+    eprintln!("[Gequhai] No valid URL in data, trying mp3_extra_url...");
+    
+    // 重新解析HTML提取mp3_extra_url
+    if let Ok(re) = Regex::new(r#"window\.mp3_extra_url\s*=\s*['\"]([^'\"]+)['\"]"#) {
+        if let Some(captures) = re.captures(&html) {
+            if let Some(extra_url) = captures.get(1) {
+                let encoded_url = extra_url.as_str();
+                eprintln!("[Gequhai] Found mp3_extra_url (encoded): {}", &encoded_url[..encoded_url.len().min(200)]);
+                
+                // Base64解码 (先将#替换为H，然后Base64解码)
+                let b64_str = encoded_url.replace('#', "H");
+                eprintln!("[Gequhai] Base64 string: {}", &b64_str[..b64_str.len().min(200)]);
+                
+                use base64::{Engine as _, engine::general_purpose::STANDARD};
+                if let Ok(decoded_bytes) = STANDARD.decode(&b64_str) {
+                    if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                        eprintln!("[Gequhai] Decoded URL: {}", &decoded_str[..decoded_str.len().min(200)]);
+                        
+                        // 检查是否为网盘链接（仅支持下载）
+                        if decoded_str.contains("pan.quark.cn") || decoded_str.contains("pan.baidu.com") {
+                            eprintln!("[Gequhai] Detected cloud drive URL, adding DOWNLOAD_ONLY marker");
+                            // 添加特殊前缀标记，前端检测到后会提示用户
+                            let marked_url = format!("DOWNLOAD_ONLY:{}", decoded_str);
+                            eprintln!("[Gequhai] Marked URL: {}", &marked_url[..marked_url.len().min(200)]);
+                            return Ok(marked_url);
+                        }
+                        
+                        return Ok(decoded_str);
+                    }
+                }
+            }
+        }
+    }
+    
+    eprintln!("[Gequhai] No url found in API response or extra_url");
+    Err(format!("Failed to get gequhai play URL - no url in API response (play_id: {})", play_id))
 }
 
 // 获取bugu播放URL
@@ -833,12 +1033,17 @@ async fn get_qqmp3_play_url(client: &Client, id: &str) -> Result<String, String>
 
 // 获取migu播放URL
 async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> {
+    // eprintln!("[Migu] Getting play URL for id: {}", id);
+    
     let parts: Vec<&str> = id.split('_').collect();
     if parts.len() != 2 {
+        eprintln!("[Migu] Invalid ID format: {}", id);
         return Err("Invalid migu ID".to_string());
     }
     let content_id = parts[0];
     let copyright_id = parts[1];
+    
+    // eprintln!("[Migu] content_id={}, copyright_id={}", content_id, copyright_id);
 
     // 获取歌曲详情
     let search_switch = r#"{"song": 1, "album": 0, "singer": 0, "tagSong": 1, "mvSong": 0, "bestShow": 1}"#;
@@ -849,6 +1054,8 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
         encoded_switch
     );
     
+    eprintln!("[Migu] Request URL: https://c.musicapp.migu.cn/v1.0/content/search_all.do?{}", params);
+    
     let response = client.get(&format!("https://c.musicapp.migu.cn/v1.0/content/search_all.do?{}", params))
         .header("accept", "application/json, text/plain, */*")
         .header("accept-encoding", "gzip, deflate, br, zstd")
@@ -857,9 +1064,34 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
         .header("appid", "ce")
         .header("channel", "014X031")
         .header("connection", "keep-alive")
+        .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
+        .header("hwid", "")
+        .header("imei", "")
+        .header("h5page", "")
+        .header("imsi", "")
+        .header("location-info", "")
+        .header("mgm-user-agent", "")
+        .header("oaid", "")
+        .header("uid", "")
+        .header("location-data", "")
+        .header("logid", "h5page[1808]")
+        .header("mgm-network-operators", "02")
+        .header("mgm-network-standard", "03")
+        .header("mgm-network-type", "03")
         .header("origin", "https://y.migu.cn")
+        .header("recommendstatus", "1")
         .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
-        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+        .header("sec-ch-ua-mobile", "?0")
+        .header("sec-ch-ua-platform", "\"Windows\"")
+        .header("sec-fetch-dest", "empty")
+        .header("sec-fetch-mode", "cors")
+        .header("sec-fetch-site", "same-site")
+        .header("subchannel", "014X031")
+        .header("test", "00")
+        .header("ua", "Android_migu")
+        .header("version", "6.8.8")
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
@@ -873,54 +1105,122 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
         .and_then(|r| r.as_array())
         .and_then(|arr| arr.first()) {
         
-        // 尝试newRateFormats，然后是rateFormats
-        let rate_formats = song.get("newRateFormats")
-            .and_then(|v| v.as_array())
-            .or_else(|| song.get("rateFormats").and_then(|v| v.as_array()));
+        // 合并rateFormats和newRateFormats - 使用前端的相同逻辑
+        let mut rate_formats: Vec<serde_json::Value> = Vec::new();
         
-        if let Some(rate_formats) = rate_formats {
-            // 按质量排序，选择最好的
-            for rate in rate_formats {
-                if let (Some(format_type), Some(resource_type)) = (
-                    rate.get("formatType").and_then(|v| v.as_str()),
-                    rate.get("resourceType").and_then(|v| v.as_str())
-                ) {
-                    let listen_url = format!(
-                        "https://c.musicapp.migu.cn/MIGUM3.0/strategy/listen-url/v2.4?resourceType={}&netType=01&scene=&toneFlag={}&contentId={}&copyrightId={}&lowerQualityContentId={}",
-                        resource_type, format_type, content_id, copyright_id, content_id
-                    );
-                    
-                    let listen_response = client.get(&listen_url)
-                        .header("accept", "application/json, text/plain, */*")
-                        .header("activityid", "v4_zt_2022_music")
-                        .header("appid", "ce")
-                        .header("channel", "014X031")
-                        .header("origin", "https://y.migu.cn")
-                        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                        .send()
-                        .await
-                        .map_err(|e| format!("Listen request failed: {}", e))?;
+        if let Some(rf) = song.get("rateFormats").and_then(|v| v.as_array()) {
+            rate_formats.extend(rf.clone());
+        }
+        if let Some(nrf) = song.get("newRateFormats").and_then(|v| v.as_array()) {
+            rate_formats.extend(nrf.clone());
+        }
+        
+        // eprintln!("[Migu] Found {} rate formats", rate_formats.len());
+        
+        // 按质量排序
+        rate_formats.sort_by(|a, b| {
+            let size_a = a.get("size").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let size_b = b.get("size").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            size_b.partial_cmp(&size_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        for rate in &rate_formats {
+            if let (Some(format_type), Some(resource_type)) = (
+                rate.get("formatType").and_then(|v| v.as_str()),
+                rate.get("resourceType").and_then(|v| v.as_str())
+            ) {
+                eprintln!("[Migu] Trying format_type={}, resource_type={}", format_type, resource_type);
+                
+                let listen_url = format!(
+                    "https://c.musicapp.migu.cn/MIGUM3.0/strategy/listen-url/v2.4?resourceType={}&netType=01&scene=&toneFlag={}&contentId={}&copyrightId={}&lowerQualityContentId={}",
+                    resource_type, format_type, content_id, copyright_id, content_id
+                );
+                
+                let listen_response = client.get(&listen_url)
+                    .header("accept", "application/json, text/plain, */*")
+                    .header("accept-encoding", "gzip, deflate, br, zstd")
+                    .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
+                    .header("activityid", "v4_zt_2022_music")
+                    .header("appid", "ce")
+                    .header("channel", "014X031")
+                    .header("connection", "keep-alive")
+                    .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
+                    .header("host", "c.musicapp.migu.cn")
+                    .header("hwid", "")
+                    .header("imei", "")
+                    .header("h5page", "")
+                    .header("imsi", "")
+                    .header("location-info", "")
+                    .header("mgm-user-agent", "")
+                    .header("oaid", "")
+                    .header("uid", "")
+                    .header("location-data", "")
+                    .header("logid", "h5page[1808]")
+                    .header("mgm-network-operators", "02")
+                    .header("mgm-network-standard", "03")
+                    .header("mgm-network-type", "03")
+                    .header("origin", "https://y.migu.cn")
+                    .header("recommendstatus", "1")
+                    .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
+                    .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
+                    .header("sec-ch-ua-mobile", "?0")
+                    .header("sec-ch-ua-platform", "\"Windows\"")
+                    .header("sec-fetch-dest", "empty")
+                    .header("sec-fetch-mode", "cors")
+                    .header("sec-fetch-site", "same-site")
+                    .header("subchannel", "014X031")
+                    .header("test", "00")
+                    .header("ua", "Android_migu")
+                    .header("version", "6.8.8")
+                    .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
+                    .send()
+                    .await
+                    .map_err(|e| format!("Listen request failed: {}", e))?;
 
-                    let listen_json: serde_json::Value = listen_response.json()
-                        .await
-                        .map_err(|e| format!("Parse listen response failed: {}", e))?;
+                let listen_json: serde_json::Value = listen_response.json()
+                    .await
+                    .map_err(|e| format!("Parse listen response failed: {}", e))?;
 
-                    if let Some(url) = listen_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
-                        return Ok(url.to_string());
-                    }
-                    
-                    // 如果data.url不存在，尝试data.androidUrl或iosUrl
-                    if let Some(url) = listen_json.get("data")
-                        .and_then(|d| d.get("androidUrl").or_else(|| d.get("iosUrl")))
-                        .and_then(|v| v.as_str()) {
-                        return Ok(url.to_string());
-                    }
+                eprintln!("[Migu] Listen response code: {}", listen_json.get("code").and_then(|c| c.as_str()).unwrap_or("unknown"));
+
+                if let Some(url) = listen_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+                    return Ok(url.to_string());
+                }
+                
+                if let Some(url) = listen_json.get("data")
+                    .and_then(|d| d.get("androidUrl").or_else(|| d.get("iosUrl")))
+                    .and_then(|v| v.as_str()) {
+                    return Ok(url.to_string());
+                }
+                
+                // Fallback: 使用备用API
+                eprintln!("[Migu] Primary API failed, trying fallback...");
+                let fallback_url = format!(
+                    "https://app.pd.nf.migu.cn/MIGUM3.0/v1.0/content/sub/listenSong.do?channel=mx&copyrightId={}&contentId={}&toneFlag={}&resourceType={}&userId=15548614588710179085069&netType=00",
+                    copyright_id, content_id, format_type, resource_type
+                );
+                
+                let fallback_response = client.get(&fallback_url)
+                    .header("accept", "application/json")
+                    .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    .send()
+                    .await
+                    .map_err(|e| format!("Fallback request failed: {}", e))?;
+                
+                let fallback_json: serde_json::Value = fallback_response.json()
+                    .await
+                    .map_err(|e| format!("Parse fallback response failed: {}", e))?;
+                
+                eprintln!("[Migu] Fallback response code: {}", fallback_json.get("code").and_then(|c| c.as_str()).unwrap_or("unknown"));
+                
+                if let Some(url) = fallback_json.get("url").and_then(|v| v.as_str()) {
+                    return Ok(url.to_string());
                 }
             }
         }
     }
 
-    Err("Failed to get play URL".to_string())
+    Err("Failed to get migu play URL - no valid rate format found".to_string())
 }
 
 // 获取livepoo播放URL

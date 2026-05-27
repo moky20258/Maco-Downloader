@@ -11,6 +11,8 @@ pub struct MusicItem {
     pub cover: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
     pub provider: String,
 }
 
@@ -34,6 +36,8 @@ pub struct SearchResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UrlResponse {
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_only: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

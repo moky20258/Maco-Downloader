@@ -165,12 +165,51 @@ export class MiguProvider implements MusicProvider {
             .join(', ');
           const coverItems = item?.imgItems || [];
           const cover = coverItems.length ? coverItems[coverItems.length - 1]?.img : undefined;
+          
+          // 提取文件大小信息（从 rateFormats 或 newRateFormats 中获取最大的 size）
+          const rateFormats = (item?.newRateFormats || item?.rateFormats || []) as MiguRate[];
+          let size: string | undefined;
+          if (rateFormats.length > 0) {
+            // 找到最大的文件大小
+            const sorted = rateFormats
+              .filter((rate) => rate && rate.size)
+              .sort((a, b) => parseSize(b.size) - parseSize(a.size));
+            if (sorted.length > 0 && sorted[0].size) {
+              const rawSize = sorted[0].size;
+              // console.log('Migu raw size value:', rawSize, typeof rawSize);
+              
+              // 判断是否已经是 MB 单位
+              const sizeStr = String(rawSize).trim();
+              if (sizeStr.toLowerCase().includes('mb')) {
+                // 已经是 MB 单位，直接使用
+                size = sizeStr;
+              } else {
+                // 可能是字节单位，需要转换
+                const sizeNum = Number(sizeStr);
+                if (sizeNum > 0) {
+                  // 如果数字很大（>1000000），认为是字节，需要转换为 MB
+                  if (sizeNum > 1000000) {
+                    const sizeMB = (sizeNum / (1024 * 1024)).toFixed(2);
+                    size = `${sizeMB}MB`;
+                    // console.log('Converted bytes to MB:', sizeNum, '->', size);
+                  } else {
+                    // 否则可能就是 MB 数值
+                    size = `${sizeNum}MB`;
+                    // console.log('Using as MB directly:', sizeNum);
+                  }
+                }
+              }
+            }
+          }
+          // console.log('Final migu size:', size);
+          
           return {
             id,
             title: item?.name || '未知歌曲',
             artist: artist || '未知歌手',
             album: album || undefined,
             cover,
+            size,
             provider: this.name,
           } as MusicItem;
         })

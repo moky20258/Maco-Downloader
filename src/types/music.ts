@@ -5,6 +5,7 @@ export interface MusicItem {
   album?: string;
   cover?: string;
   duration?: string;
+  size?: string; // 文件大小，如 "5.2MB"
   provider: string; // 标识来源渠道，如 'gequbao'
   extra?: unknown; // 渠道特有的原始数据
 }

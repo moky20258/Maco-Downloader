@@ -28,21 +28,26 @@ export async function searchMusic(query: string, provider: string): Promise<Musi
 }
 
 // 获取音乐播放地址
-export async function getMusicUrl(id: string, provider: string): Promise<string> {
+export async function getMusicUrl(id: string, provider: string): Promise<{ url: string; downloadOnly: boolean }> {
   if (isTauri()) {
     try {
       const response = await invoke<{ url: string }>('get_music_url', {
         id,
         provider,
       });
-      return response.url;
+      
+      // 检查是否为仅下载链接
+      const downloadOnly = response.url.startsWith('DOWNLOAD_ONLY:');
+      const url = downloadOnly ? response.url.replace('DOWNLOAD_ONLY:', '') : response.url;
+      
+      return { url, downloadOnly };
     } catch (error) {
       console.error('Tauri get URL error:', error);
-      return '';
+      return { url: '', downloadOnly: false };
     }
   } else {
     console.warn('Not in Tauri environment');
-    return '';
+    return { url: '', downloadOnly: false };
   }
 }
 

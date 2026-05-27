@@ -95,9 +95,32 @@ export default function Home() {
     return [];
   });
   const [isPlaylistOpen, setIsPlaylistOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastPosition, setToastPosition] = useState<{ top: number; left: number } | null>(null);
+
+  // 显示提示消息
+  const showToast = (msg: string, element?: HTMLElement) => {
+    setToastMessage(msg);
+    
+    // 如果提供了元素，定位到该元素附近
+    if (element) {
+      const rect = element.getBoundingClientRect();
+      setToastPosition({
+        top: rect.top + window.scrollY,
+        left: rect.left + window.scrollX
+      });
+    } else {
+      setToastPosition(null);
+    }
+    
+    setTimeout(() => {
+      setToastMessage(null);
+      setToastPosition(null);
+    }, 3000);
+  };
 
   const openSourceUrl = async (item: MusicItem) => {
-    const url = await getMusicUrl(item.id, item.provider || "gequbao");
+    const { url } = await getMusicUrl(item.id, item.provider || "gequbao");
     if (url) {
       window.open(url, "_blank");
       return;
@@ -166,7 +189,7 @@ export default function Home() {
     return -1;
   };
 
-  const handlePlay = async (item: MusicItem) => {
+  const handlePlay = async (item: MusicItem, event?: React.MouseEvent) => {
     if (activeMusic?.id === item.id) {
       if (playing) {
         audioRef.current?.pause();
@@ -188,7 +211,14 @@ export default function Home() {
       setPlaying(false); // Wait for load
       setCurrentTime(0);
 
-      const url = await getMusicUrl(item.id, item.provider || 'gequbao');
+      const { url, downloadOnly } = await getMusicUrl(item.id, item.provider || 'gequbao');
+      
+      // 如果歌曲仅支持下载，弹出提示
+      if (downloadOnly) {
+        const targetElement = event?.currentTarget as HTMLElement | undefined;
+        showToast(`《${item.title}》仅支持下载，不支持在线播放`, targetElement);
+        return;
+      }
       
       if (url && audioRef.current) {
         // 如果返回了封面，更新当前播放歌曲的封面
@@ -204,6 +234,11 @@ export default function Home() {
             console.warn(`歌曲《${item.title}》播放失败，自动跳过`);
             handleNext();
           });
+        
+        // 异步获取文件大小
+        if (!item.size) {
+          fetchFileSize(item.id, url);
+        }
       } else {
         // 获取URL失败，自动跳过
         console.warn(`无法获取《${item.title}》的播放链接，自动跳过`);
@@ -214,6 +249,87 @@ export default function Home() {
       // 发生错误，自动跳过
       console.warn(`播放《${item.title}》时发生错误，自动跳过`);
       handleNext();
+    }
+  };
+
+  // 获取文件大小
+  const fetchFileSize = async (itemId: string, url: string) => {
+    try {
+      console.log('Fetching file size for:', itemId, url);
+      
+      // 方法1: 尝试 HEAD 请求
+      let contentLength: string | null = null;
+      
+      try {
+        const headResponse = await fetch(url, { 
+          method: 'HEAD',
+          mode: 'cors',
+        });
+        contentLength = headResponse.headers.get('content-length');
+        console.log('HEAD request content-length:', contentLength);
+      } catch (headError) {
+        console.log('HEAD request failed, trying GET with range:', headError);
+        // 方法2: 如果 HEAD 失败，尝试 GET 请求（只取少量数据）
+        try {
+          const getResponse = await fetch(url, {
+            method: 'GET',
+            headers: {
+              'Range': 'bytes=0-0',
+            },
+          });
+          if (getResponse.status === 206 || getResponse.status === 200) {
+            contentLength = getResponse.headers.get('content-range')?.split('/')[1] 
+              || getResponse.headers.get('content-length');
+            console.log('GET request content-length:', contentLength);
+          }
+        } catch (getError) {
+          console.log('GET request also failed:', getError);
+        }
+      }
+      
+      if (contentLength) {
+        const bytes = parseInt(contentLength, 10);
+        console.log('File size in bytes:', bytes);
+        
+        if (bytes > 0) {
+          let sizeStr: string;
+          // 判断是否需要转换（大于 1MB 的数值认为是字节）
+          if (bytes > 1048576) {
+            const mb = (bytes / (1024 * 1024)).toFixed(2);
+            sizeStr = `${mb}MB`;
+          } else if (bytes > 1024) {
+            const kb = (bytes / 1024).toFixed(2);
+            sizeStr = `${kb}KB`;
+          } else {
+            sizeStr = `${bytes}B`;
+          }
+          
+          console.log('Formatted size:', sizeStr);
+          
+          // 更新 results 中对应 item 的 size
+          setResults(prev => prev.map(item => 
+            item.id === itemId ? { ...item, size: sizeStr } : item
+          ));
+          
+          // 同时更新播放列表中的 size
+          setPlaylist(prev => prev.map(item => 
+            item.id === itemId ? { ...item, size: sizeStr } : item
+          ));
+          
+          // 如果当前正在播放这首歌，也更新 activeMusic
+          setActiveMusic(prev => {
+            if (prev && prev.id === itemId) {
+              return { ...prev, size: sizeStr };
+            }
+            return prev;
+          });
+        }
+      } else {
+        console.log('No content-length header found');
+      }
+    } catch (error) {
+      // 静默失败，不影响播放
+      console.error('Failed to fetch file size:', error);
     }
   };
 
@@ -261,8 +377,8 @@ export default function Home() {
   }, []);
 
   const listGridTemplate = downloadEnabled
-    ? "grid-cols-[40px_1fr_40px] md:grid-cols-[50px_2fr_1.5fr_120px]"
-    : "grid-cols-[1fr_40px] md:grid-cols-[2fr_1.5fr_80px]";
+    ? "grid-cols-[40px_1fr_40px] md:grid-cols-[50px_2fr_1.5fr_80px_120px]"
+    : "grid-cols-[1fr_40px] md:grid-cols-[2fr_1.5fr_80px_80px]";
 
   const executeDownload = async (task: DownloadTask) => {
     try {
@@ -280,11 +396,31 @@ export default function Home() {
       }
 
       // 获取下载 URL
-      const arrayBuffer = await downloadMusic(
-        task.musicItem.id,
-        task.fileName,
-        task.musicItem.provider || 'gequbao'
-      );
+      let arrayBuffer;
+      try {
+        arrayBuffer = await downloadMusic(
+          task.musicItem.id,
+          task.fileName,
+          task.musicItem.provider || 'gequbao'
+        );
+      } catch (err: unknown) {
+        // 检查是否为网盘链接
+        const errorMessage = err instanceof Error ? err.message : '';
+        if (errorMessage.startsWith('CLOUD_DRIVE:')) {
+          const cloudUrl = errorMessage.replace('CLOUD_DRIVE:', '');
+          console.log('[Download] Opening cloud drive URL:', cloudUrl);
+          
+          // 在浏览器中打开网盘链接
+          window.open(cloudUrl, '_blank');
+          
+          // 标记为完成
+          setDownloadTasks(prev =>
+            prev.map(t => (t.id === task.id ? { ...t, status: "completed", progress: 100 } : t))
+          );
+          return;
+        }
+        throw err; // 重新抛出其他错误
+      }
 
       // 创建 Blob 并下载
       if (arrayBuffer) {
@@ -312,7 +448,12 @@ export default function Home() {
     }
   };
 
-  const downloadOne = async (item: MusicItem) => {
+  const downloadOne = async (item: MusicItem, event?: React.MouseEvent) => {
+    // 显示文件大小提示（如果有）
+    if (item.size) {
+      showToast(`《${item.title}》文件大小：${item.size}`, event?.currentTarget as HTMLElement | undefined);
+    }
+    
     const taskId = `${item.id}-${Date.now()}`;
     const cleanTitle = item.title.replace(/\s+/g, ' ').trim();
     const filename = `${cleanTitle}.mp3`;
@@ -520,7 +661,21 @@ export default function Home() {
   };
 
   // Playlist Functions
-  const addToPlaylist = (item: MusicItem) => {
+  const addToPlaylist = async (item: MusicItem, event?: React.MouseEvent) => {
+    // 检查歌曲是否支持播放
+    try {
+      const { downloadOnly } = await getMusicUrl(item.id, item.provider || 'gequbao');
+      
+      if (downloadOnly) {
+        const targetElement = event?.currentTarget as HTMLElement | undefined;
+        showToast(`《${item.title}》仅支持下载，不支持播放`, targetElement);
+        return; // 拒绝加入播放列表
+      }
+    } catch (error) {
+      console.error('Failed to check music URL:', error);
+    }
+    
+    // 支持播放，加入播放列表
     setPlaylist(prev => {
       const exists = prev.find(p => p.id === item.id && p.provider === item.provider);
       if (exists) {
@@ -654,8 +809,8 @@ export default function Home() {
               { id: 'jianbin-qq', name: '煎饼-qq' },
               { id: 'jianbin-kugou', name: '煎饼-酷狗' },
               { id: 'jianbin-kuwo', name: '煎饼-酷我' },
-              { id: 'gequbao', name: '歌曲宝' },
-              { id: 'gequhai', name: '歌曲海' },
+              // { id: 'gequbao', name: '歌曲宝' }, // 暂时隐藏
+              // { id: 'gequhai', name: '歌曲海' }, // 暂时隐藏
               { id: 'qqmp3', name: 'QQMP3' },
               { id: 'migu', name: '咪咕' },
               { id: 'livepoo', name: '力音' },
@@ -814,8 +969,32 @@ export default function Home() {
                   ) : null}
                   <div>歌曲</div>
                   <div className="hidden md:block">歌手</div>
+                  <div className="hidden md:block text-center">时长</div>
                   <div className="text-right pr-4 md:pr-4">操作</div>
                 </div>
+
+                {/* Toast 提示 */}
+                <AnimatePresence>
+                  {toastMessage && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -10 }}
+                      className="fixed z-50 p-3 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-lg text-amber-800 dark:text-amber-200 text-sm shadow-lg pointer-events-none"
+                      style={toastPosition ? {
+                        top: `${toastPosition.top - 50}px`,
+                        left: `${toastPosition.left}px`,
+                        transform: 'translateX(-50%)'
+                      } : {
+                        top: '50%',
+                        left: '50%',
+                        transform: 'translate(-50%, -50%)'
+                      }}
+                    >
+                      {toastMessage}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 {/* List Items */}
                 <div className="divide-y divide-slate-50 dark:divide-slate-800">
@@ -828,7 +1007,7 @@ export default function Home() {
                         key={item.id}
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
-                        onDoubleClick={() => handlePlay(item)}
+                        onDoubleClick={(e) => handlePlay(item, e)}
                         className={cn(
                           "grid gap-4 p-4 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all duration-200 group cursor-pointer select-none active:scale-[0.99] rounded-xl",
                           listGridTemplate,
@@ -853,7 +1032,7 @@ export default function Home() {
 
                         <div className="flex items-center gap-3 overflow-hidden">
                           <div 
-                            onClick={(e) => { e.stopPropagation(); handlePlay(item); }}
+                            onClick={(e) => { e.stopPropagation(); handlePlay(item, e); }}
                             className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden flex-shrink-0 cursor-pointer relative group/cover"
                           >
                             {item.cover ? (
@@ -898,16 +1077,20 @@ export default function Home() {
                           {item.artist}
                         </div>
 
+                        <div className="text-slate-500 dark:text-slate-400 text-sm text-center hidden md:block">
+                          {item.duration || '-'}
+                        </div>
+
                         <div className="flex justify-end pr-2 md:pr-2 gap-2">
                           <button
-                            onClick={(e) => { e.stopPropagation(); handlePlay(item); }}
+                            onClick={(e) => { e.stopPropagation(); handlePlay(item, e); }}
                             className="p-2 text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
                             title="播放"
                           >
                             <Play className="w-5 h-5" />
                           </button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); addToPlaylist(item); }}
+                            onClick={(e) => { e.stopPropagation(); addToPlaylist(item, e); }}
                             className="p-2 text-slate-400 dark:text-slate-500 hover:text-green-500 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
                             title="添加到播放列表"
                           >
@@ -916,7 +1099,7 @@ export default function Home() {
                           {/* <SourceLinkButton item={item} /> */}
                           {downloadEnabled ? (
                             <button
-                              onClick={(e) => { e.stopPropagation(); downloadOne(item); }}
+                              onClick={(e) => { e.stopPropagation(); downloadOne(item, e); }}
                               className="p-2 text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
                               title="下载"
                             >
