@@ -80,6 +80,7 @@ type MiguSong = {
   imgItems?: MiguImage[];
   rateFormats?: MiguRate[];
   newRateFormats?: MiguRate[];
+  length?: string | number; // 时长信息
 };
 
 type MiguSearchResponse = {
@@ -203,12 +204,32 @@ export class MiguProvider implements MusicProvider {
           }
           // console.log('Final migu size:', size);
           
+          // 提取时长信息
+          let duration: string | undefined;
+          const length = item?.length;
+          if (length !== null && length !== undefined) {
+            const lengthStr = String(length).trim();
+            // 如果已经是字符串格式（如 "03:45" 或 "00:03:45"），直接使用
+            if (lengthStr.includes(':')) {
+              duration = lengthStr;
+            } else {
+              // 如果是秒数，转换为 MM:SS 格式
+              const seconds = Number(lengthStr);
+              if (Number.isFinite(seconds) && seconds > 0) {
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = Math.floor(seconds % 60);
+                duration = `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+              }
+            }
+          }
+          
           return {
             id,
             title: item?.name || '未知歌曲',
             artist: artist || '未知歌手',
             album: album || undefined,
             cover,
+            duration,
             size,
             provider: this.name,
           } as MusicItem;

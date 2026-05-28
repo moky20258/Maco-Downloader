@@ -111,7 +111,8 @@ export function UpdateChecker() {
     if (isTauri()) {
       try {
         // 使用Tauri的shell插件在默认浏览器中打开链接
-        await invoke('plugin:shell|open', { path: url });
+        const { open } = await import('@tauri-apps/plugin-shell');
+        await open(url);
         console.log("Opened in browser successfully");
       } catch (error) {
         console.error("Failed to open browser:", error);
@@ -277,37 +278,35 @@ export function UpdateChecker() {
                   立即下载
                 </button>
 
-                {/* 下载链接显示和复制 */}
-                {downloadUrl && (
-                  <div className="space-y-2">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">
-                      或手动复制下载链接：
-                    </p>
-                    <div className="flex gap-2">
-                      <div className="flex-1 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-                        <p className="text-xs text-slate-600 dark:text-slate-400 truncate font-mono">
-                          {downloadUrl}
-                        </p>
-                      </div>
-                      <button
-                        onClick={handleCopyUrl}
-                        className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors flex items-center gap-1"
-                      >
-                        {copied ? (
-                          <>
-                            <CheckCircle className="w-4 h-4 text-green-500" />
-                            <span className="text-xs">已复制</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-4 h-4" />
-                            <span className="text-xs">复制</span>
-                          </>
-                        )}
-                      </button>
+                {/* 下载链接显示和复制 - 始终显示以便用户复制 */}
+                <div className="space-y-2">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    或手动复制下载链接：
+                  </p>
+                  <div className="flex gap-2">
+                    <div className="flex-1 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                      <p className="text-xs text-slate-600 dark:text-slate-400 font-mono break-all select-text" style={{ wordBreak: 'break-all' }}>
+                        {downloadUrl || getDownloadUrl()}
+                      </p>
                     </div>
+                    <button
+                      onClick={handleCopyUrl}
+                      className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors flex items-center gap-1 flex-shrink-0"
+                    >
+                      {copied ? (
+                        <>
+                          <CheckCircle className="w-4 h-4 text-green-500" />
+                          <span className="text-xs">已复制</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span className="text-xs">复制</span>
+                        </>
+                      )}
+                    </button>
                   </div>
-                )}
+                </div>
 
                 {/* 稍后再说按钮 */}
                 <button

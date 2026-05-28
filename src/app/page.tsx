@@ -74,6 +74,9 @@ export default function Home() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [downloadingCount, setDownloadingCount] = useState(0);
   
+  // 用于取消时长获取的 AbortController
+  const durationFetchControllerRef = useRef<AbortController | null>(null);
+  
   // Download Manager State
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -149,6 +152,9 @@ export default function Home() {
     try {
       const items = await searchMusic(query, provider);
       setResults(items);
+      
+      // 搜索完成后，在后台异步获取每首歌的时长
+      fetchDurationsForResults(items);
     } catch (err) {
       console.error(err);
     } finally {
@@ -330,6 +336,132 @@ export default function Home() {
     } catch (error) {
       // 静默失败，不影响播放
       console.error('Failed to fetch file size:', error);
+    }
+  };
+
+  // 批量获取搜索结果中歌曲的时长
+  const fetchDurationsForResults = async (items: MusicItem[]) => {
+    // 取消之前的时长获取任务
+    if (durationFetchControllerRef.current) {
+      durationFetchControllerRef.current.abort();
+    }
+    
+    // 创建新的 AbortController
+    const controller = new AbortController();
+    durationFetchControllerRef.current = controller;
+    
+    // 限制并发数量和总数，避免过多请求
+    const batchSize = 3;
+    const maxItems = 15; // 最多获取前15首的时长
+    
+    try {
+      for (let i = 0; i < Math.min(items.length, maxItems); i += batchSize) {
+        // 检查是否已被取消
+        if (controller.signal.aborted) {
+          console.log('Duration fetch cancelled');
+          return;
+        }
+        
+        const batch = items.slice(i, i + batchSize);
+        
+        const promises = batch.map(async (item) => {
+          // 检查是否已被取消
+          if (controller.signal.aborted) return;
+          
+          // 如果已经有时长信息，跳过
+          if (item.duration) return;
+          
+          try {
+            const { url } = await getMusicUrl(item.id, item.provider || 'gequbao');
+            if (!url) return;
+            
+            // 检查是否已被取消
+            if (controller.signal.aborted) return;
+            
+            // 创建一个临时的 Audio 对象来获取时长
+            const tempAudio = new Audio();
+            
+            // 等待元数据加载
+            await new Promise<void>((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                tempAudio.removeEventListener('loadedmetadata', onLoaded);
+                tempAudio.removeEventListener('error', onError);
+                resolve();
+              }, 5000); // 5秒超时
+              
+              const onLoaded = () => {
+                clearTimeout(timeout);
+                tempAudio.removeEventListener('loadedmetadata', onLoaded);
+                tempAudio.removeEventListener('error', onError);
+                resolve();
+              };
+              
+              const onError = () => {
+                clearTimeout(timeout);
+                tempAudio.removeEventListener('loadedmetadata', onLoaded);
+                tempAudio.removeEventListener('error', onError);
+                reject(new Error('Failed to load audio'));
+              };
+              
+              tempAudio.addEventListener('loadedmetadata', onLoaded);
+              tempAudio.addEventListener('error', onError);
+              tempAudio.src = url;
+              tempAudio.load();
+            });
+            
+            // 检查是否已被取消
+            if (controller.signal.aborted) {
+              tempAudio.src = '';
+              return;
+            }
+            
+            // 获取时长
+            if (Number.isFinite(tempAudio.duration) && tempAudio.duration > 0) {
+              const minutes = Math.floor(tempAudio.duration / 60);
+              const seconds = Math.floor(tempAudio.duration % 60);
+              const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+              
+              // 更新 results 中的 duration
+              setResults(prev => prev.map(prevItem => 
+                (prevItem.id === item.id && prevItem.provider === item.provider)
+                  ? { ...prevItem, duration: durationStr }
+                  : prevItem
+              ));
+            }
+            
+            // 清理
+            tempAudio.src = '';
+          } catch (error) {
+            // 如果是取消操作，不打印错误
+            if (error instanceof DOMException && error.name === 'AbortError') {
+              return;
+            }
+            // 静默失败，不影响用户体验
+            console.error(`Failed to fetch duration for ${item.title}:`, error);
+          }
+        });
+        
+        // 等待当前批次完成
+        await Promise.all(promises);
+        
+        // 检查是否已被取消
+        if (controller.signal.aborted) {
+          console.log('Duration fetch cancelled between batches');
+          return;
+        }
+        
+        // 批次间稍微延迟，避免请求过快
+        if (i + batchSize < Math.min(items.length, maxItems)) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
+      }
+    } catch (error) {
+      // 如果是取消操作，不打印错误
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        console.log('Duration fetch aborted');
+        return;
+      }
+      console.error('Error in fetchDurationsForResults:', error);
     }
   };
 
@@ -732,7 +864,30 @@ export default function Home() {
 
     const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
     const handleLoadedMetadata = () => {
-      setDuration(audio.duration);
+      const audioDuration = audio.duration;
+      setDuration(audioDuration);
+      
+      // 将获取到的时长更新到搜索结果中
+      if (activeMusic && !activeMusic.duration && Number.isFinite(audioDuration)) {
+        const minutes = Math.floor(audioDuration / 60);
+        const seconds = Math.floor(audioDuration % 60);
+        const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        
+        // 更新 results 中的 duration
+        setResults(prev => prev.map(item => 
+          (item.id === activeMusic.id && item.provider === activeMusic.provider)
+            ? { ...item, duration: durationStr }
+            : item
+        ));
+        
+        // 更新 playlist 中的 duration
+        setPlaylist(prev => prev.map(item => 
+          (item.id === activeMusic.id && item.provider === activeMusic.provider)
+            ? { ...item, duration: durationStr }
+            : item
+        ));
+      }
+      
       if (playing) audio.play().catch(() => setPlaying(false));
     };
     const handleEnded = () => {

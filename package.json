@@ -1,6 +1,6 @@
 {
   "name": "coco-downloader",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -14,6 +14,7 @@
   "dependencies": {
     "@lobehub/ui": "^4.20.1",
     "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "antd": "^6.2.0",
     "antd-style": "^4.1.0",
     "axios": "^1.13.2",

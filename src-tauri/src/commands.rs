@@ -87,13 +87,28 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
             let url = item.get("url")?.as_str()?;
             let absolute_url = to_absolute_url(url);
             
+            // 尝试提取时长信息
+            let duration = item.get("duration")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    // 如果API返回的是数字（秒数），转换为 MM:SS 格式
+                    item.get("duration")
+                        .and_then(|v| v.as_i64())
+                        .map(|secs| {
+                            let minutes = secs / 60;
+                            let seconds = secs % 60;
+                            format!("{}:{:02}", minutes, seconds)
+                        })
+                });
+            
             Some(MusicItem {
                 id: percent_encoding::utf8_percent_encode(&absolute_url, percent_encoding::NON_ALPHANUMERIC).to_string(),
                 title: item.get("name").and_then(|v| v.as_str()).unwrap_or("未知歌曲").to_string(),
                 artist: item.get("artist").and_then(|v| v.as_str()).unwrap_or("未知歌手").to_string(),
                 album: item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 cover: item.get("cover").and_then(|v| v.as_str()).map(to_absolute_url),
-                duration: None,
+                duration,
                 size: None,
                 provider: provider.to_string(),
             })
@@ -184,7 +199,7 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
                 artist,
                 album: None,
                 cover: None,
-                duration: None,
+                duration: None, // gequbao搜索页面不提供时长信息
                 size: None,
                 provider: "gequbao".to_string(),
             })
@@ -211,7 +226,7 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
                         artist: "未知歌手".to_string(),
                         album: None,
                         cover: None,
-                        duration: None,
+                        duration: None, // gequbao搜索页面不提供时长信息
                         size: None,
                         provider: "gequbao".to_string(),
                     })
@@ -269,7 +284,7 @@ async fn search_gequhai(client: &Client, query: &str) -> Result<SearchResponse, 
                 artist: if artist.is_empty() { "未知歌手".to_string() } else { artist },
                 album: None,
                 cover: None,
-                duration: None,
+                duration: None, // gequhai搜索页面不提供时长信息
                 size: None,
                 provider: "gequhai".to_string(),
             })
@@ -680,7 +695,7 @@ async fn search_livepoo(client: &Client, query: &str) -> Result<SearchResponse, 
                 artist: if artist.is_empty() { "未知歌手".to_string() } else { artist },
                 album: None,
                 cover: None,
-                duration: None,
+                duration: None, // livepoo搜索页面不提供时长信息
                 size: None,
                 provider: "livepoo".to_string(),
             })

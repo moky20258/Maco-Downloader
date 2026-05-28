@@ -1,6 +1,6 @@
 {
   "productName": "maco-music",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "identifier": "com.maco-music",
   "build": {
     "beforeDevCommand": "npm run dev",
