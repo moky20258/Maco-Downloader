@@ -46,11 +46,11 @@
 
 1. **页面标题** (src/app/layout.tsx)
    - ❌ `COCO音乐下载站`
-   - ✅ `Maco音乐下载站`
+   - ✅ `Maco在线音乐`
 
 2. **主页标题** (src/app/page.tsx)
    - ❌ `COCO音乐下载站`
-   - ✅ `Maco音乐下载站`
+   - ✅ `Maco在线音乐`
 
 3. **页脚版权** (src/app/page.tsx)
    - ❌ `© 2024 COCO Music.`
@@ -60,7 +60,7 @@
    - ❌ `CoCo Studio`
    - ✅ `Maco Studio`
    - ❌ `欢迎来到 COCO 音乐下载站`
-   - ✅ `欢迎来到 Maco 音乐下载站`
+   - ✅ `欢迎来到 Maco 在线音乐`
 
 5. **Tauri 配置** (src-tauri/tauri.conf.json)
    - ❌ `productName: "coco-downloader"`

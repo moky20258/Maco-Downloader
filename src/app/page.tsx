@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import Image from "next/image";
-import { Search, Loader2, Play, Pause, Download, Check, Music, Trash2, Flame, Zap, ShieldCheck, Headphones, ExternalLink, ListPlus, X } from "lucide-react";
+import { Search, Loader2, Play, Pause, Download, Check, Music, Trash2, Flame, Zap, ShieldCheck, Headphones, ExternalLink, ListPlus, X, Shuffle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { MusicItem } from "@/types/music";
@@ -58,6 +58,8 @@ export default function Home() {
   const [provider, setProvider] = useState("jianbin-kugou");
   const [results, setResults] = useState<MusicItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [randomLoading, setRandomLoading] = useState(false);
+  const [isRandomListen, setIsRandomListen] = useState(false);
   
   // Playback State
   const [activeMusic, setActiveMusic] = useState<MusicItem | null>(null);
@@ -146,6 +148,7 @@ export default function Home() {
     
     setLoading(true);
     setSearched(true);
+    setIsRandomListen(false);
     setResults([]);
     setSelectedIds(new Set());
     
@@ -159,6 +162,133 @@ export default function Home() {
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 随便听听：随机搜索热门关键词，获取20首歌曲
+  const handleRandomListen = async () => {
+    if (randomLoading) return;
+    
+    setRandomLoading(true);
+    setSearched(true);
+    setIsRandomListen(true);
+    setResults([]);
+    setSelectedIds(new Set());
+    
+    // 按类型分类的热门搜索词库（50+个关键词）
+    const hotKeywordsByCategory = {
+      // 华语流行
+      huayu: [
+        "周杰伦", "林俊杰", "陈奕迅", "薛之谦", "邓紫棋",
+        "王力宏", "蔡依林", "五月天", "李荣浩", "毛不易"
+      ],
+      // 欧美热歌
+      oumei: [
+        "Taylor Swift", "Adele", "Ed Sheeran", "Justin Bieber",
+        "The Weeknd", "Billie Eilish", "Bruno Mars", "Dua Lipa"
+      ],
+      // 抖音热歌
+      douyin: [
+        "抖音热歌", "网络热歌", "快手热歌", "热门BGM",
+        "抖音神曲", "网红歌曲", "短视频热歌"
+      ],
+      // 经典老歌
+      laoge: [
+        "经典老歌", "80年代歌曲", "90年代歌曲", "港台老歌",
+        "怀旧歌曲", "流金岁月", "岁月经典"
+      ],
+      // 古风歌曲
+      gufeng: [
+        "古风歌曲", "古风", "国风音乐", "仙侠歌曲",
+        "古风音乐", "中国风歌曲"
+      ],
+      // 民谣
+      minyao: [
+        "民谣", "校园民谣", "城市民谣", "独立民谣",
+        "赵雷", "宋冬野", "陈粒"
+      ],
+      // 摇滚
+      yaogun: [
+        "摇滚", "中国摇滚", "Beyond", "五月天摇滚",
+        "汪峰", "许巍", "朴树"  ],
+      // 说唱
+      shuochang: [
+        "说唱", "中文说唱", "Rap", "HIPHOP",
+        "中国有嘻哈", "rapper"
+      ],
+      // 电子音乐
+      dianzi: [
+        "电子音乐", "EDM", "DJ", "电音",
+        "舞曲", "Club Music"
+      ],
+      // 伤感歌曲
+      shanggan: [
+        "伤感歌曲", "催泪歌曲", "失恋歌曲",
+        "悲伤歌曲", "情感歌曲"
+      ]
+    };
+    
+    try {
+      // 从所有分类中随机选择3个不同的分类
+      const categories = Object.keys(hotKeywordsByCategory);
+      const shuffledCategories = categories.sort(() => Math.random() - 0.5);
+      const selectedCategories = shuffledCategories.slice(0, 3);
+      
+      console.log('[Random Listen] Selected categories:', selectedCategories);
+      
+      // 从每个选中的分类中随机选择1个关键词
+      const selectedKeywords: string[] = [];
+      for (const category of selectedCategories) {
+        const keywords = hotKeywordsByCategory[category as keyof typeof hotKeywordsByCategory];
+        const randomKeyword = keywords[Math.floor(Math.random() * keywords.length)];
+        selectedKeywords.push(randomKeyword);
+      }
+      
+      console.log('[Random Listen] Searching for keywords:', selectedKeywords);
+      
+      const allResults: MusicItem[] = [];
+      
+      // 并发搜索多个关键词
+      const searchPromises = selectedKeywords.map(async (keyword) => {
+        try {
+          const items = await searchMusic(keyword, provider);
+          return items;
+        } catch (err) {
+          console.error(`Failed to search "${keyword}":`, err);
+          return [];
+        }
+      });
+      
+      const resultsArray = await Promise.all(searchPromises);
+      
+      // 合并所有结果
+      for (const items of resultsArray) {
+        allResults.push(...items);
+      }
+      
+      // 去重（根据 id + provider）
+      const uniqueMap = new Map<string, MusicItem>();
+      for (const item of allResults) {
+        const key = `${item.provider}-${item.id}`;
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, item);
+        }
+      }
+      
+      // 随机打乱并取20首
+      const uniqueSongs = Array.from(uniqueMap.values());
+      const shuffledSongs = uniqueSongs.sort(() => Math.random() - 0.5);
+      const finalResults = shuffledSongs.slice(0, 20);
+      
+      setResults(finalResults);
+      
+      // 在后台异步获取每首歌的时长
+      fetchDurationsForResults(finalResults);
+    } catch (err) {
+      console.error('Random listen failed:', err);
+    } finally {
+      setRandomLoading(false);
+      setIsRandomListen(false);
     }
   };
 
@@ -987,26 +1117,45 @@ export default function Home() {
           </div>
           
           {/* Search Bar */}
-          <form onSubmit={handleSearch} className="relative w-full max-w-2xl group mb-6">
-            <div className="absolute inset-0 bg-sky-200 dark:bg-sky-900 rounded-full blur-xl opacity-30 group-hover:opacity-50 transition-opacity duration-300"></div>
-            <div className="relative bg-white dark:bg-slate-900 shadow-xl shadow-slate-200/50 dark:shadow-none rounded-full flex items-center p-2 pr-2 border border-slate-100 dark:border-slate-800 transition-transform duration-300 hover:scale-[1.01]">
-              <Search className="w-6 h-6 text-slate-400 dark:text-slate-500 ml-4" />
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜索歌曲、歌手..."
-                className="flex-1 bg-transparent border-none outline-none px-4 text-lg text-slate-700 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600 h-12"
-              />
-              <button
-                type="submit"
-                disabled={loading}
-                className="bg-sky-500 hover:bg-sky-600 text-white rounded-full px-8 h-12 font-medium transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 cursor-pointer"
-              >
-                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "搜索"}
-              </button>
-            </div>
-          </form>
+          <div className="flex items-center justify-center gap-3 mb-6">
+            <form onSubmit={handleSearch} className="relative w-full max-w-xl group">
+              <div className="absolute inset-0 bg-sky-200 dark:bg-sky-900 rounded-full blur-xl opacity-30 group-hover:opacity-50 transition-opacity duration-300"></div>
+              <div className="relative bg-white dark:bg-slate-900 shadow-xl shadow-slate-200/50 dark:shadow-none rounded-full flex items-center p-2 pr-2 border border-slate-100 dark:border-slate-800 transition-transform duration-300 hover:scale-[1.01]">
+                <Search className="w-6 h-6 text-slate-400 dark:text-slate-500 ml-4" />
+                <input
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="搜索歌曲、歌手..."
+                  className="flex-1 bg-transparent border-none outline-none px-4 text-lg text-slate-700 dark:text-slate-200 placeholder:text-slate-300 dark:placeholder:text-slate-600 h-12"
+                />
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="bg-sky-500 hover:bg-sky-600 text-white rounded-full px-8 h-12 font-medium transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 cursor-pointer"
+                >
+                  {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : "搜索"}
+                </button>
+              </div>
+            </form>
+            {/* 随便听听按钮 - 放在搜索框右侧 */}
+            <button
+              type="button"
+              onClick={handleRandomListen}
+              disabled={randomLoading}
+              className="flex-shrink-0 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-full px-5 h-12 font-medium transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 cursor-pointer shadow-lg shadow-purple-200/50 dark:shadow-none"
+              title="随机发现好听的音乐"
+            >
+              {randomLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <>
+                  <Shuffle className="w-5 h-5" />
+                  <span className="hidden sm:inline">随便听听</span>
+                </>
+              )}
+            </button>
+          </div>
 
           {/* Hot Tags */}
           <AnimatePresence>
@@ -1267,7 +1416,7 @@ export default function Home() {
                   })}
                 </div>
               </motion.div>
-            ) : searched ? (
+            ) : searched && !isRandomListen ? (
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}

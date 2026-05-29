@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Maco音乐下载站",
+  title: "Maco 在线音乐",
   description: "简约纯净的音乐下载工具",
   icons: {
     icon: "/logo.svg",

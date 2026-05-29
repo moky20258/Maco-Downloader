@@ -16,7 +16,7 @@ export default function AboutPage() {
         
         <div className="space-y-6 text-slate-600">
           <p>
-            欢迎来到 Maco 音乐下载站。这是一个致力于提供纯净、快速音乐搜索与下载体验的项目。
+            欢迎来到 Maco 在线音乐。这是一个致力于提供纯净、快速音乐搜索与下载体验的项目。
             我们摒弃了繁杂的广告与推荐，只为您呈现最直接的音乐内容。
           </p>
           
