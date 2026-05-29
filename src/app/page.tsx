@@ -79,6 +79,9 @@ export default function Home() {
   // 用于取消时长获取的 AbortController
   const durationFetchControllerRef = useRef<AbortController | null>(null);
   
+  // 播放锁定：防止并发播放请求
+  const isPlaybackLockedRef = useRef<boolean>(false);
+  
   // Download Manager State
   const [downloadTasks, setDownloadTasks] = useState<DownloadTask[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -142,6 +145,9 @@ export default function Home() {
     return next;
   };
 
+  // 搜索超时控制
+  const searchAbortControllerRef = useRef<AbortController | null>(null);
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
@@ -152,29 +158,91 @@ export default function Home() {
     setResults([]);
     setSelectedIds(new Set());
     
+    // 创建 AbortController 用于取消请求
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+    }
+    searchAbortControllerRef.current = new AbortController();
+    const { signal } = searchAbortControllerRef.current;
+    
+    // 超时控制：15秒后自动停止
+    const timeoutId = setTimeout(() => {
+      if (!signal.aborted) {
+        console.warn('[Search] Timeout after 15s, aborting...');
+        searchAbortControllerRef.current?.abort();
+      }
+    }, 15000);
+    
     try {
       const items = await searchMusic(query, provider);
+      
+      // 检查是否被取消
+      if (signal.aborted) {
+        console.log('[Search] Request was aborted, stopping...');
+        if (items.length === 0) {
+          alert('搜索超时或网络异常，请稍后重试或切换搜索源');
+          setSearched(false);
+          setLoading(false);
+          return;
+        }
+        // 有部分结果，继续处理
+        console.log('[Search] Using partial results:', items.length);
+      }
+      
+      // 清除超时定时器
+      clearTimeout(timeoutId);
+      
       setResults(items);
       
       // 搜索完成后，在后台异步获取每首歌的时长
       fetchDurationsForResults(items);
     } catch (err) {
-      console.error(err);
+      console.error('[Search] Search failed:', err);
+      // 清除超时定时器
+      clearTimeout(timeoutId);
+      
+      // 检查是否是取消操作
+      if (searchAbortControllerRef.current?.signal.aborted) {
+        console.log('[Search] Request was cancelled');
+      } else {
+        // 真正的错误
+        alert('搜索失败，请检查网络连接或切换搜索源');
+        setSearched(false);
+      }
     } finally {
+      // 清除超时定时器
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   };
 
   // 随便听听：随机搜索热门关键词，获取20首歌曲
+  const randomAbortControllerRef = useRef<AbortController | null>(null);
+
   const handleRandomListen = async () => {
     if (randomLoading) return;
-    
+      
     setRandomLoading(true);
     setSearched(true);
     setIsRandomListen(true);
     setResults([]);
     setSelectedIds(new Set());
     
+    // 创建 AbortController 用于取消请求
+    if (randomAbortControllerRef.current) {
+      randomAbortControllerRef.current.abort();
+    }
+    randomAbortControllerRef.current = new AbortController();
+    const { signal } = randomAbortControllerRef.current;
+    
+    // 超时控制：15秒后自动停止
+    const timeoutId = setTimeout(() => {
+      if (!signal.aborted) {
+        console.warn('[Random Listen] Timeout after 15s, aborting...');
+        randomAbortControllerRef.current?.abort();
+      }
+    }, 15000);
+      
     // 按类型分类的热门搜索词库（50+个关键词）
     const hotKeywordsByCategory = {
       // 华语流行
@@ -227,15 +295,15 @@ export default function Home() {
         "悲伤歌曲", "情感歌曲"
       ]
     };
-    
+      
     try {
       // 从所有分类中随机选择3个不同的分类
       const categories = Object.keys(hotKeywordsByCategory);
       const shuffledCategories = categories.sort(() => Math.random() - 0.5);
       const selectedCategories = shuffledCategories.slice(0, 3);
-      
+        
       console.log('[Random Listen] Selected categories:', selectedCategories);
-      
+        
       // 从每个选中的分类中随机选择1个关键词
       const selectedKeywords: string[] = [];
       for (const category of selectedCategories) {
@@ -243,29 +311,76 @@ export default function Home() {
         const randomKeyword = keywords[Math.floor(Math.random() * keywords.length)];
         selectedKeywords.push(randomKeyword);
       }
-      
+        
       console.log('[Random Listen] Searching for keywords:', selectedKeywords);
-      
+      console.log('[Random Listen] Current provider:', provider);
+            
       const allResults: MusicItem[] = [];
-      
+      let successCount = 0;
+      let errorCount = 0;
+            
       // 并发搜索多个关键词
       const searchPromises = selectedKeywords.map(async (keyword) => {
         try {
+          // 检查是否已被取消
+          if (signal.aborted) {
+            console.log('[Random Listen] Search cancelled for:', keyword);
+            return [];
+          }
+          
+          console.log('[Random Listen] Searching for:', keyword);
           const items = await searchMusic(keyword, provider);
+          console.log('[Random Listen] Got', items.length, 'items for:', keyword);
+          
+          if (items.length > 0) {
+            successCount++;
+          } else {
+            errorCount++;
+          }
+          
           return items;
         } catch (err) {
-          console.error(`Failed to search "${keyword}":`, err);
+          console.error('[Random Listen] Failed to search "' + keyword + '":', err);
+          errorCount++;
           return [];
         }
       });
-      
+            
+      console.log('[Random Listen] Waiting for all searches to complete...');
       const resultsArray = await Promise.all(searchPromises);
+      console.log('[Random Listen] All searches completed');
       
-      // 合并所有结果
-      for (const items of resultsArray) {
-        allResults.push(...items);
+      // 检查是否被取消
+      if (signal.aborted) {
+        console.log('[Random Listen] Request was aborted, stopping...');
+        // 检查是否有部分结果
+        for (const items of resultsArray) {
+          allResults.push(...items);
+        }
+        
+        if (allResults.length === 0) {
+          // 超时或取消且无结果
+          alert('搜索超时或网络异常，请稍后重试或切换搜索源');
+          setSearched(false);
+          setIsRandomListen(false);
+          setRandomLoading(false);
+          return;
+        }
+        
+        // 有部分结果，继续处理
+        console.log('[Random Listen] Using partial results:', allResults.length);
+      } else {
+        // 正常完成，合并所有结果
+        for (const items of resultsArray) {
+          allResults.push(...items);
+        }
       }
       
+      // 清除超时定时器
+      clearTimeout(timeoutId);
+      
+      console.log('[Random Listen] Total results before dedup:', allResults.length);
+            
       // 去重（根据 id + provider）
       const uniqueMap = new Map<string, MusicItem>();
       for (const item of allResults) {
@@ -274,19 +389,38 @@ export default function Home() {
           uniqueMap.set(key, item);
         }
       }
-      
-      // 随机打乱并取20首
+            
+      // 随机打乱并20首
       const uniqueSongs = Array.from(uniqueMap.values());
+      console.log('[Random Listen] Unique songs after dedup:', uniqueSongs.length);
+      
       const shuffledSongs = uniqueSongs.sort(() => Math.random() - 0.5);
       const finalResults = shuffledSongs.slice(0, 20);
       
-      setResults(finalResults);
+      console.log('[Random Listen] Final results to display:', finalResults.length);
       
+      setResults(finalResults);
+            
       // 在后台异步获取每首歌的时长
       fetchDurationsForResults(finalResults);
     } catch (err) {
       console.error('Random listen failed:', err);
+      // 清除超时定时器
+      clearTimeout(timeoutId);
+      
+      // 检查是否是取消操作
+      if (randomAbortControllerRef.current?.signal.aborted) {
+        console.log('[Random Listen] Request was cancelled');
+        // 已经被处理，不需要额外操作
+      } else {
+        // 真正的错误
+        alert('搜索失败，请检查网络连接或切换搜索源');
+        setSearched(false);
+        setIsRandomListen(false);
+      }
     } finally {
+      // 清除超时定时器
+      clearTimeout(timeoutId);
       setRandomLoading(false);
       setIsRandomListen(false);
     }
@@ -326,65 +460,149 @@ export default function Home() {
   };
 
   const handlePlay = async (item: MusicItem, event?: React.MouseEvent) => {
-    if (activeMusic?.id === item.id) {
+    // 如果点击的是当前正在播放的歌曲，切换播放/暂停
+    if (activeMusic?.id === item.id && activeMusic?.provider === item.provider) {
       if (playing) {
         audioRef.current?.pause();
         setPlaying(false);
       } else {
-        audioRef.current?.play();
+        audioRef.current?.play().catch(() => setPlaying(false));
         setPlaying(true);
       }
       return;
     }
 
+    // 防止并发播放请求
+    if (isPlaybackLockedRef.current) {
+      console.log('Playback locked, ignoring request');
+      return;
+    }
+
     try {
+      // 锁定播放，防止并发请求
+      isPlaybackLockedRef.current = true;
+      
+      // 停止当前播放
       if (audioRef.current) {
         audioRef.current.pause();
+        audioRef.current.src = ''; // 清空src，停止加载
       }
       
+      // 设置新的播放状态
       setActiveMusic(item);
       syncShuffleIndex(item.id);
-      setPlaying(false); // Wait for load
+      setPlaying(false);
       setCurrentTime(0);
+      setDuration(0);
 
+      // 获取音乐URL
       const { url, downloadOnly } = await getMusicUrl(item.id, item.provider || 'gequbao');
+      
+      // 检查是否已被取消（用户可能又点击了其他歌曲）
+      if (!isPlaybackLockedRef.current) {
+        return;
+      }
       
       // 如果歌曲仅支持下载，弹出提示
       if (downloadOnly) {
         const targetElement = event?.currentTarget as HTMLElement | undefined;
         showToast(`《${item.title}》仅支持下载，不支持在线播放`, targetElement);
+        setActiveMusic(null); // 清除当前播放状态
+        isPlaybackLockedRef.current = false; // 解锁
         return;
       }
       
-      if (url && audioRef.current) {
-        // 如果返回了封面，更新当前播放歌曲的封面
-        // 注意：Rust 后端暂不支持返回 cover，后续可扩展
-        
-        audioRef.current.src = url;
-        audioRef.current.load();
-        audioRef.current.play()
-          .then(() => setPlaying(true))
-          .catch(e => {
-            console.error("Play failed", e);
-            // 播放失败时，自动跳过到下一首
-            console.warn(`歌曲《${item.title}》播放失败，自动跳过`);
-            handleNext();
-          });
-        
-        // 异步获取文件大小
-        if (!item.size) {
-          fetchFileSize(item.id, url);
+      if (!url || !audioRef.current) {
+        // 获取URL失败，提示用户并跳到下一首
+        console.warn(`无法获取《${item.title}》的播放链接`);
+        showToast(`无法获取《${item.title}》的播放链接，跳到下一首`);
+        setActiveMusic(null);
+        isPlaybackLockedRef.current = false; // 先解锁
+        // 延迟调用，确保状态已更新
+        setTimeout(() => {
+          const nextIndex = getNextIndex();
+          if (nextIndex >= 0) {
+            if (isPlayingFromPlaylist) {
+              handlePlay(playlist[nextIndex]);
+            } else {
+              handlePlay(results[nextIndex]);
+            }
+          }
+        }, 100);
+        return;
+      }
+      
+      // 设置音频源并播放
+      audioRef.current.src = url;
+      audioRef.current.load();
+      
+      // 添加超时机制，防止永久卡住
+      const playTimeout = setTimeout(() => {
+        if (isPlaybackLockedRef.current && !playing) {
+          console.warn(`歌曲《${item.title}》加载超时，自动跳到下一首`);
+          showToast(`《${item.title}》加载超时，跳到下一首`);
+          setActiveMusic(null);
+          isPlaybackLockedRef.current = false; // 先解锁
+          // 跳到下一首
+          setTimeout(() => {
+            const nextIndex = getNextIndex();
+            if (nextIndex >= 0) {
+              if (isPlayingFromPlaylist) {
+                handlePlay(playlist[nextIndex]);
+              } else {
+                handlePlay(results[nextIndex]);
+              }
+            }
+          }, 100);
         }
-      } else {
-        // 获取URL失败，自动跳过
-        console.warn(`无法获取《${item.title}》的播放链接，自动跳过`);
-        handleNext();
+      }, 10000); // 10秒超时
+      
+      try {
+        await audioRef.current.play();
+        clearTimeout(playTimeout);
+        setPlaying(true);
+        // 播放成功，解锁
+        isPlaybackLockedRef.current = false;
+      } catch (playError) {
+        clearTimeout(playTimeout);
+        console.error("Play failed", playError);
+        showToast(`《${item.title}》播放失败，跳到下一首`);
+        setActiveMusic(null);
+        isPlaybackLockedRef.current = false; // 先解锁
+        // 延迟调用，确保状态已更新
+        setTimeout(() => {
+          const nextIndex = getNextIndex();
+          if (nextIndex >= 0) {
+            if (isPlayingFromPlaylist) {
+              handlePlay(playlist[nextIndex]);
+            } else {
+              handlePlay(results[nextIndex]);
+            }
+          }
+        }, 100);
+        return;
+      }
+      
+      // 异步获取文件大小
+      if (!item.size && url) {
+        fetchFileSize(item.id, url);
       }
     } catch (err) {
-      console.error(err);
-      // 发生错误，自动跳过
-      console.warn(`播放《${item.title}》时发生错误，自动跳过`);
-      handleNext();
+      console.error('handlePlay error:', err);
+      showToast(`播放《${item.title}》时发生错误，跳到下一首`);
+      setActiveMusic(null);
+      isPlaybackLockedRef.current = false; // 先解锁
+      // 延迟调用，确保状态已更新
+      setTimeout(() => {
+        const nextIndex = getNextIndex();
+        if (nextIndex >= 0) {
+          if (isPlayingFromPlaylist) {
+            handlePlay(playlist[nextIndex]);
+          } else {
+            handlePlay(results[nextIndex]);
+          }
+        }
+      }, 100);
     }
   };
 
@@ -891,6 +1109,12 @@ export default function Home() {
   const canPrev = getPrevIndex() >= 0;
 
   const handleNext = () => {
+    // 防止并发播放请求
+    if (isPlaybackLockedRef.current) {
+      console.log('Playback locked, ignoring next request');
+      return;
+    }
+    
     const nextIndex = getNextIndex();
     if (nextIndex >= 0) {
       // 根据播放来源选择正确的列表
@@ -903,6 +1127,12 @@ export default function Home() {
   };
   
   const handlePrev = () => {
+    // 防止并发播放请求
+    if (isPlaybackLockedRef.current) {
+      console.log('Playback locked, ignoring prev request');
+      return;
+    }
+    
     const prevIndex = getPrevIndex();
     if (prevIndex >= 0) {
       // 根据播放来源选择正确的列表
@@ -1030,6 +1260,13 @@ export default function Home() {
         }
         return;
       }
+      
+      // 防止并发播放请求
+      if (isPlaybackLockedRef.current) {
+        console.log('Playback locked, ignoring ended event');
+        return;
+      }
+      
       const nextIndex = getNextIndex();
       if (nextIndex >= 0) {
         // 根据播放来源选择正确的列表

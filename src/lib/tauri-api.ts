@@ -8,21 +8,26 @@ export function isTauri(): boolean {
 
 // 搜索音乐
 export async function searchMusic(query: string, provider: string): Promise<MusicItem[]> {
+  console.log('[searchMusic] Called with query:', query, 'provider:', provider);
+  console.log('[searchMusic] isTauri():', isTauri());
+  
   if (isTauri()) {
     // 使用 Tauri 命令
     try {
+      console.log('[searchMusic] Invoking Tauri command...');
       const response = await invoke<{ items: MusicItem[] }>('search_music', {
         query,
         provider,
       });
+      console.log('[searchMusic] Got response:', response.items.length, 'items');
       return response.items;
     } catch (error) {
-      console.error('Tauri search error:', error);
+      console.error('[searchMusic] Tauri search error:', error);
       return [];
     }
   } else {
     // 非 Tauri 环境（开发环境）
-    console.warn('Not in Tauri environment, search may not work without API server');
+    console.warn('[searchMusic] Not in Tauri environment, search may not work without API server');
     return [];
   }
 }

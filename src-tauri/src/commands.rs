@@ -44,6 +44,8 @@ pub async fn search_music(query: String, provider: String) -> Result<SearchRespo
 }
 
 async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<SearchResponse, String> {
+    eprintln!("[Jianbin] Searching: query='{}', provider='{}'", query, provider);
+    
     let source = match provider {
         "jianbin-kugou" => "kugou",
         "jianbin-qq" => "qq",
@@ -58,6 +60,8 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
     params.insert("type", source);
     params.insert("page", "1");
 
+    eprintln!("[Jianbin] Requesting: {} with source={}", JBSOU_BASE, source);
+    
     let response = client.post(JBSOU_BASE)
         .form(&params)
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36")
@@ -73,6 +77,9 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
         .await
         .map_err(|e| format!("Read response failed: {}", e))?;
 
+    eprintln!("[Jianbin] Response length: {}", body.len());
+    eprintln!("[Jianbin] Response preview: {}", &body[..body.len().min(200)]);
+
     // 解析 JSON
     let json: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
@@ -81,6 +88,8 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
     let data = json.get("data")
         .and_then(|d| d.as_array())
         .ok_or("Invalid response format")?;
+
+    eprintln!("[Jianbin] Found {} items in data array", data.len());
 
     let items: Vec<MusicItem> = data.iter()
         .filter_map(|item| {
@@ -115,6 +124,8 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
         })
         .filter(|item| !item.id.is_empty())
         .collect();
+
+    eprintln!("[Jianbin] Returning {} items", items.len());
 
     Ok(SearchResponse { items })
 }
