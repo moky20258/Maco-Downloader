@@ -308,7 +308,7 @@ async fn search_gequhai(client: &Client, query: &str) -> Result<SearchResponse, 
 }
 
 async fn search_bugu(client: &Client, query: &str) -> Result<SearchResponse, String> {
-    let response = client.get("https://a.buguyy.top/newapi/search.php")
+    let response = client.get("https://buguyy.top/api/search")
         .query(&[("keyword", query)])
         .header("accept", "application/json, text/plain, */*")
         .header("origin", "https://buguyy.top")
@@ -322,10 +322,14 @@ async fn search_bugu(client: &Client, query: &str) -> Result<SearchResponse, Str
         .await
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
-    let list = json.get("data")
-        .and_then(|d| d.get("list"))
-        .and_then(|l| l.as_array())
-        .ok_or("Invalid response format")?;
+    // 新API格式: data直接是数组; 旧API格式: data.list是数组
+    let list = if let Some(arr) = json.get("data").and_then(|d| d.as_array()) {
+        arr
+    } else if let Some(arr) = json.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array()) {
+        arr
+    } else {
+        return Err("Invalid response format".to_string());
+    };
 
     let items: Vec<MusicItem> = list.iter()
         .filter_map(|item| {
@@ -1024,7 +1028,7 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
 
 // 获取bugu播放URL
 async fn get_bugu_play_url(client: &Client, id: &str) -> Result<String, String> {
-    let response = client.get("https://a.buguyy.top/newapi/geturl2.php")
+    let response = client.get("https://buguyy.top/api/geturl")
         .query(&[("id", id)])
         .header("accept", "application/json, text/plain, */*")
         .header("origin", "https://buguyy.top")
@@ -1045,7 +1049,10 @@ async fn get_bugu_play_url(client: &Client, id: &str) -> Result<String, String> 
     let json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
-    if let Some(url) = json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
+    // 新API格式: {"success":true,"url":"..."} ; 旧API格式: {"data":{"url":"..."}}
+    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+        Ok(url.to_string())
+    } else if let Some(url) = json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
         Ok(url.to_string())
     } else {
         Err("Failed to get play URL".to_string())

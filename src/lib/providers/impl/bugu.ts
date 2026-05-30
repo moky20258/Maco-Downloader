@@ -37,6 +37,7 @@ type BuguSearchResponse = {
 };
 
 type BuguDetailResponse = {
+  url?: string;  // 新API格式
   data?: {
     url?: string;
     lrc?: string;
@@ -71,13 +72,14 @@ export class BuguProvider implements MusicProvider {
 
   async search(query: string): Promise<MusicItem[]> {
     try {
-      const { data } = await axios.get<BuguSearchResponse>('https://a.buguyy.top/newapi/search.php', {
+      const { data } = await axios.get<BuguSearchResponse>('https://buguyy.top/api/search', {
         headers: SEARCH_HEADERS,
         params: { keyword: query },
         timeout: REQUEST_TIMEOUT,
         httpsAgent: HTTPS_AGENT,
       });
-      const list = data?.data?.list || [];
+      // 新API格式: data直接是数组; 旧API格式: data.list是数组
+      const list = Array.isArray(data?.data) ? data.data : (data?.data?.list || []);
       return list
         .map((item) => ({
           id: String(item?.id ?? ''),
@@ -100,13 +102,14 @@ export class BuguProvider implements MusicProvider {
 
   async getPlayInfo(id: string, extra?: unknown): Promise<PlayInfo> {
     try {
-      const { data } = await axios.get<BuguDetailResponse>('https://a.buguyy.top/newapi/geturl2.php', {
+      const { data } = await axios.get<BuguDetailResponse>('https://buguyy.top/api/geturl', {
         headers: SEARCH_HEADERS,
         params: { id },
         timeout: REQUEST_TIMEOUT,
         httpsAgent: HTTPS_AGENT,
       });
-      const url = data?.data?.url;
+      // 新API格式: {url: "..."} ; 旧API格式: {data: {url: "..."}}
+      const url = typeof data?.url === 'string' ? data.url : (data?.data?.url);
       if (typeof url !== 'string' || !url.startsWith('http')) {
         throw new Error('Failed to get play url');
       }
