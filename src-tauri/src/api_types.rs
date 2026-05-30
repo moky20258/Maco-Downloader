@@ -45,3 +45,9 @@ pub struct UrlResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LyricsResponse {
+    pub lyrics: String, // LRC格式的歌词文本
+    pub has_lyrics: bool,
+}

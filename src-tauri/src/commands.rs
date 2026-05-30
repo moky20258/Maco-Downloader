@@ -1,11 +1,13 @@
 use tauri::command;
 use reqwest::Client;
 use serde_json;
-use crate::api_types::{MusicItem, SearchResponse, UrlResponse};
+use crate::api_types::{MusicItem, SearchResponse, UrlResponse, LyricsResponse};
 use std::collections::HashMap;
 use scraper::{Html, Selector};
 use regex::Regex;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use futures_util::StreamExt;
+use tauri::Emitter;
 
 const JBSOU_BASE: &str = "https://www.jbsou.cn/";
 const VKEYS_BASE: &str = "https://api.vkeys.cn";
@@ -1325,4 +1327,211 @@ async fn get_livepoo_play_url(client: &Client, id: &str) -> Result<String, Strin
     } else {
         Err("Invalid play URL".to_string())
     }
+}
+
+#[command]
+pub async fn get_lyrics(id: String, provider: String, title: String, artist: String) -> Result<LyricsResponse, String> {
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("Failed to create client: {}", e))?;
+
+    eprintln!("[Lyrics] Request: {} - {} (provider: {})", title, artist, provider);
+
+    // 根据provider选择不同的歌词获取策略
+    let lyrics = match provider.as_str() {
+        "jianbin-netease" | "jianbin-qq" | "jianbin-kugou" | "jianbin-kuwo" => {
+            // 煎饼搜索源直接使用通用LrcApi搜索
+            get_generic_lyrics(&client, &title, &artist).await
+        }
+        "bugu" => get_bugu_lyrics(&client, &id, &title, &artist).await,
+        "qq" => get_qq_lyrics(&client, &id, &title, &artist).await,
+        "migu" => get_migu_lyrics(&client, &id, &title, &artist).await,
+        // 其他provider使用通用搜索
+        _ => get_generic_lyrics(&client, &title, &artist).await,
+    };
+
+    match lyrics {
+        Ok(lrc) => {
+            eprintln!("[Lyrics] Success: {} characters", lrc.len());
+            Ok(LyricsResponse {
+                lyrics: lrc,
+                has_lyrics: true,
+            })
+        }
+        Err(e) => {
+            eprintln!("[Lyrics] Failed: {}", e);
+            Ok(LyricsResponse {
+                lyrics: String::new(),
+                has_lyrics: false,
+            })
+        }
+    }
+}
+
+// 从布谷获取歌词
+async fn get_bugu_lyrics(client: &Client, _id: &str, title: &str, artist: &str) -> Result<String, String> {
+    eprintln!("[Bugu Lyrics] Searching: {} - {}", title, artist);
+    
+    // 布谷API可能不直接提供歌词，使用通用搜索
+    get_generic_lyrics(client, title, artist).await
+}
+
+// 从QQ音乐获取歌词
+async fn get_qq_lyrics(client: &Client, _id: &str, title: &str, artist: &str) -> Result<String, String> {
+    eprintln!("[QQ Lyrics] Searching: {} - {}", title, artist);
+    
+    // 使用vkeys API搜索歌词
+    let _response = client.get(&format!("{}/v2/music/tencent/search/song", VKEYS_BASE))
+        .query(&[("word", format!("{} {}", title, artist))])
+        .header("accept", "application/json, text/plain, */*")
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    // QQ音乐API不直接返回歌词，使用通用搜索
+    get_generic_lyrics(client, title, artist).await
+}
+
+// 从咪咕获取歌词
+async fn get_migu_lyrics(client: &Client, _id: &str, title: &str, artist: &str) -> Result<String, String> {
+    eprintln!("[Migu Lyrics] Searching: {} - {}", title, artist);
+    
+    // 咪咕API不直接提供歌词，使用通用搜索
+    get_generic_lyrics(client, title, artist).await
+}
+
+// 通用歌词搜索（使用LrcApi）
+async fn get_generic_lyrics(client: &Client, title: &str, artist: &str) -> Result<String, String> {
+    eprintln!("[Generic Lyrics] Searching: {} - {}", title, artist);
+    
+    // 尝试多个API端点
+    let urls = vec![
+        format!(
+            "https://api.lrc.cx/lyrics?title={}&artist={}&limit=1",
+            utf8_percent_encode(title, NON_ALPHANUMERIC),
+            utf8_percent_encode(artist, NON_ALPHANUMERIC)
+        ),
+        format!(
+            "https://api.lrc.cx/lyrics?title={}&limit=1",
+            utf8_percent_encode(title, NON_ALPHANUMERIC)
+        ),
+    ];
+    
+    for (i, url) in urls.iter().enumerate() {
+        eprintln!("[Generic Lyrics] Trying URL {}", i + 1);
+        
+        let response = client.get(url)
+            .header("accept", "text/plain, */*")
+            .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            .send()
+            .await;
+        
+        match response {
+            Ok(resp) => {
+                let status = resp.status();
+                
+                if !status.is_success() {
+                    eprintln!("[Generic Lyrics] URL {} returned status: {}", i + 1, status);
+                    continue;
+                }
+                
+                let lrc_text = resp.text()
+                    .await
+                    .map_err(|e| format!("Read response failed: {}", e))?;
+                
+                // 检查是否返回了有效歌词
+                if lrc_text.is_empty() || lrc_text.contains("未找到") || lrc_text.contains("not found") {
+                    eprintln!("[Generic Lyrics] URL {} returned no valid lyrics", i + 1);
+                    continue;
+                }
+                
+                eprintln!("[Generic Lyrics] Success from URL {}, length: {}", i + 1, lrc_text.len());
+                return Ok(lrc_text);
+            }
+            Err(e) => {
+                eprintln!("[Generic Lyrics] URL {} request failed: {}", i + 1, e);
+                continue;
+            }
+        }
+    }
+    
+    Err("No lyrics found from any source".to_string())
+}
+
+#[command]
+pub async fn download_update(
+    app: tauri::AppHandle,
+    url: String,
+    filename: String,
+) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    
+    eprintln!("[Update Download] Starting download from: {}", url);
+    
+    // 显示保存对话框
+    let save_path = app.dialog().file().set_file_name(&filename).blocking_save_file();
+    
+    if save_path.is_none() {
+        return Err("User cancelled download".to_string());
+    }
+    
+    let file_path = save_path.unwrap();
+    let path_buf = std::path::PathBuf::from(file_path.to_string());
+    eprintln!("[Update Download] Saving to: {:?}", path_buf);
+    
+    // 下载文件
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // 5分钟超时
+        .build()
+        .map_err(|e| format!("Failed to create client: {}", e))?;
+    
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to start download: {}", e))?;
+    
+    let total_size = response
+        .content_length()
+        .ok_or("Failed to get file size")?;
+    
+    eprintln!("[Update Download] File size: {} bytes ({:.2} MB)", total_size, total_size as f64 / 1024.0 / 1024.0);
+    
+    let mut file = tokio::fs::File::create(&path_buf)
+        .await
+        .map_err(|e| format!("Failed to create file: {}", e))?;
+    
+    use tokio::io::AsyncWriteExt;
+    let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
+    
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download error: {}", e))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        
+        downloaded += chunk.len() as u64;
+        
+        // 发送进度事件
+        let progress = (downloaded as f64 / total_size as f64) * 100.0;
+        eprintln!("[Update Download] Progress: {:.1}%", progress);
+        
+        let progress_data = serde_json::json!({
+            "progress": progress,
+            "downloaded": downloaded,
+            "total": total_size
+        });
+        
+        app.emit("download-progress", progress_data)
+            .map_err(|e| format!("Failed to emit progress: {}", e))?;
+    }
+    
+    file.flush().await.map_err(|e| format!("Failed to flush file: {}", e))?;
+    
+    eprintln!("[Update Download] Download completed successfully");
+    
+    Ok(path_buf.to_string_lossy().to_string())
 }

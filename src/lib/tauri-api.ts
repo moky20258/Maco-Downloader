@@ -76,3 +76,32 @@ export async function downloadMusic(id: string, filename: string, provider: stri
     throw new Error('Download not available');
   }
 }
+
+// 获取歌词
+export async function getLyrics(
+  id: string, 
+  provider: string, 
+  title: string, 
+  artist: string
+): Promise<{ lyrics: string; hasLyrics: boolean }> {
+  if (isTauri()) {
+    try {
+      const response = await invoke<{ lyrics: string; has_lyrics: boolean }>('get_lyrics', {
+        id,
+        provider,
+        title,
+        artist,
+      });
+      return {
+        lyrics: response.lyrics,
+        hasLyrics: response.has_lyrics,
+      };
+    } catch (error) {
+      console.error('Tauri get lyrics error:', error);
+      return { lyrics: '', hasLyrics: false };
+    }
+  } else {
+    console.warn('Not in Tauri environment');
+    return { lyrics: '', hasLyrics: false };
+  }
+}

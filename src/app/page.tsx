@@ -9,6 +9,7 @@ import { MusicItem } from "@/types/music";
 import { PlayerBar } from "@/components/PlayerBar";
 import { DownloadDrawer } from "@/components/DownloadDrawer";
 import { PlaylistDrawer } from "@/components/PlaylistDrawer";
+import { LyricsPanel } from "@/components/LyricsPanel";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { DownloadTask } from "@/types/download";
 import axios from "axios";
@@ -103,6 +104,7 @@ export default function Home() {
     return [];
   });
   const [isPlaylistOpen, setIsPlaylistOpen] = useState(false);
+  const [isLyricsOpen, setIsLyricsOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [toastPosition, setToastPosition] = useState<{ top: number; left: number } | null>(null);
 
@@ -541,10 +543,19 @@ export default function Home() {
         if (isPlaybackLockedRef.current && !playing) {
           console.warn(`歌曲《${item.title}》加载超时，自动跳到下一首`);
           showToast(`《${item.title}》加载超时，跳到下一首`);
+          
+          // 先解锁
+          isPlaybackLockedRef.current = false;
+          
+          // 清空当前播放状态
           setActiveMusic(null);
-          isPlaybackLockedRef.current = false; // 先解锁
+          setPlaying(false);
+          
           // 跳到下一首
           setTimeout(() => {
+            // 再次确保锁已释放
+            isPlaybackLockedRef.current = false;
+            
             const nextIndex = getNextIndex();
             if (nextIndex >= 0) {
               if (isPlayingFromPlaylist) {
@@ -553,7 +564,7 @@ export default function Home() {
                 handlePlay(results[nextIndex]);
               }
             }
-          }, 100);
+          }, 300); // 增加延迟到300ms
         }
       }, 10000); // 10秒超时
       
@@ -567,10 +578,19 @@ export default function Home() {
         clearTimeout(playTimeout);
         console.error("Play failed", playError);
         showToast(`《${item.title}》播放失败，跳到下一首`);
+        
+        // 先解锁，确保可以播放下一首
+        isPlaybackLockedRef.current = false;
+        
+        // 清空当前播放状态
         setActiveMusic(null);
-        isPlaybackLockedRef.current = false; // 先解锁
+        setPlaying(false);
+        
         // 延迟调用，确保状态已更新
         setTimeout(() => {
+          // 再次确保锁已释放
+          isPlaybackLockedRef.current = false;
+          
           const nextIndex = getNextIndex();
           if (nextIndex >= 0) {
             if (isPlayingFromPlaylist) {
@@ -579,7 +599,7 @@ export default function Home() {
               handlePlay(results[nextIndex]);
             }
           }
-        }, 100);
+        }, 300); // 增加延迟到300ms
         return;
       }
       
@@ -590,10 +610,19 @@ export default function Home() {
     } catch (err) {
       console.error('handlePlay error:', err);
       showToast(`播放《${item.title}》时发生错误，跳到下一首`);
+      
+      // 先解锁
+      isPlaybackLockedRef.current = false;
+      
+      // 清空当前播放状态
       setActiveMusic(null);
-      isPlaybackLockedRef.current = false; // 先解锁
+      setPlaying(false);
+      
       // 延迟调用，确保状态已更新
       setTimeout(() => {
+        // 再次确保锁已释放
+        isPlaybackLockedRef.current = false;
+        
         const nextIndex = getNextIndex();
         if (nextIndex >= 0) {
           if (isPlayingFromPlaylist) {
@@ -602,7 +631,7 @@ export default function Home() {
             handlePlay(results[nextIndex]);
           }
         }
-      }, 100);
+      }, 300); // 增加延迟到300ms
     }
   };
 
@@ -1292,7 +1321,7 @@ export default function Home() {
   }, [playing, playMode, results, playlist, activeMusic, shuffleIndex, shuffleOrder, isPlayingFromPlaylist, handlePlay]);
 
   return (
-    <main className="min-h-[calc(100vh-64px)] bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans selection:bg-sky-100 dark:selection:bg-sky-900 pb-32 transition-colors duration-300">
+    <main className="min-h-[calc(100vh-64px)] bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans selection:bg-sky-100 dark:selection:bg-sky-900 pb-32 pt-20 transition-colors duration-300">
       <div className="container mx-auto px-4 py-12 flex flex-col items-center">
         
         {/* Header Area */}
@@ -1774,6 +1803,7 @@ export default function Home() {
             onVolumeChange={setVolume}
             onOpenPlaylist={() => setIsPlaylistOpen(true)}
             playlistCount={playlist.length}
+            onToggleLyrics={() => setIsLyricsOpen(!isLyricsOpen)}
           />
         )}
       </AnimatePresence>
@@ -1790,6 +1820,16 @@ export default function Home() {
         onClear={clearPlaylist}
         onMoveUp={movePlaylistItemUp}
         onMoveDown={movePlaylistItemDown}
+      />
+
+      {/* Lyrics Panel */}
+      <LyricsPanel
+        isOpen={isLyricsOpen}
+        onClose={() => setIsLyricsOpen(false)}
+        currentMusic={activeMusic}
+        currentTime={currentTime}
+        isPlaying={playing}
+        onSeek={handleSeek}
       />
 
       {/* Update Checker */}

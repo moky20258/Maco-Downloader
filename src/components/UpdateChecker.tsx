@@ -20,6 +20,12 @@ interface GitHubRelease {
   body: string;
 }
 
+interface DownloadProgress {
+  progress: number;
+  downloaded: number;
+  total: number;
+}
+
 export function UpdateChecker() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -28,12 +34,16 @@ export function UpdateChecker() {
   const [currentVersion, setCurrentVersion] = useState("0.0.0");
   const [downloadUrl, setDownloadUrl] = useState("");
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
+  const [downloadComplete, setDownloadComplete] = useState(false);
 
   // 获取应用当前版本号
   useEffect(() => {
     const loadVersion = async () => {
       try {
         if (isTauri()) {
+          const { getVersion } = await import('@tauri-apps/api/app');
           const version = await getVersion();
           setCurrentVersion(version);
         }
@@ -42,6 +52,35 @@ export function UpdateChecker() {
       }
     };
     loadVersion();
+  }, []);
+
+  // 监听下载进度事件
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    const setupListener = async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const unlisten = await listen('download-progress', (event: any) => {
+          const data = event.payload as DownloadProgress;
+          setDownloadProgress(data);
+          
+          if (data.progress >= 100) {
+            setDownloadComplete(true);
+            setDownloading(false);
+          }
+        });
+        
+        return unlisten;
+      } catch (error) {
+        console.error("Failed to setup download progress listener:", error);
+      }
+    };
+
+    const cleanup = setupListener();
+    return () => {
+      cleanup.then(fn => fn?.());
+    };
   }, []);
 
   const checkForUpdates = async () => {
@@ -107,17 +146,38 @@ export function UpdateChecker() {
 
     console.log("Download URL:", url);
 
-    // 在Tauri环境中，使用shell API打开浏览器
+    // 在Tauri环境中，使用应用内下载
     if (isTauri()) {
       try {
-        // 使用Tauri的shell插件在默认浏览器中打开链接
-        const { open } = await import('@tauri-apps/plugin-shell');
-        await open(url);
-        console.log("Opened in browser successfully");
+        setDownloading(true);
+        setDownloadProgress(null);
+        setDownloadComplete(false);
+        
+        // 获取文件名
+        const filename = latestRelease?.assets.find(a => a.browser_download_url === url)?.name || "update.exe";
+        
+        // 调用后端下载命令
+        const { invoke } = await import('@tauri-apps/api/core');
+        const result = await invoke<string>('download_update', {
+          url,
+          filename
+        });
+        
+        console.log("Download completed:", result);
+        setDownloadComplete(true);
+        setDownloading(false);
       } catch (error) {
-        console.error("Failed to open browser:", error);
-        // 如果shell API失败，显示下载链接让用户手动复制
-        setDownloadUrl(url);
+        console.error("Download failed:", error);
+        setDownloading(false);
+        setDownloadProgress(null);
+        // 如果下载失败，回退到浏览器下载
+        try {
+          const { open } = await import('@tauri-apps/plugin-shell');
+          await open(url);
+        } catch (err) {
+          console.error("Failed to open browser:", err);
+          setDownloadUrl(url);
+        }
       }
     } else {
       // 非Tauri环境（开发环境），使用window.open
@@ -269,44 +329,103 @@ export function UpdateChecker() {
 
               {/* Action Buttons */}
               <div className="space-y-3 pt-2">
+                {/* 下载进度条 */}
+                {downloading && downloadProgress && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
+                      <span>下载中...</span>
+                      <span>{downloadProgress.progress.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full h-3 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${downloadProgress.progress}%` }}
+                        transition={{ duration: 0.3 }}
+                        className="h-full bg-gradient-to-r from-sky-500 to-blue-600 rounded-full"
+                      />
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      {(downloadProgress.downloaded / 1024 / 1024).toFixed(2)} MB / {(downloadProgress.total / 1024 / 1024).toFixed(2)} MB
+                    </p>
+                  </div>
+                )}
+
+                {/* 下载完成提示 */}
+                {downloadComplete && (
+                  <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200 dark:border-green-800">
+                    <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-green-800 dark:text-green-300">
+                        下载完成！
+                      </p>
+                      <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                        文件已保存，请运行安装程序进行更新
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {/* 主下载按钮 */}
                 <button
                   onClick={handleDownload}
-                  className="w-full py-3 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                  disabled={downloading}
+                  className={`w-full py-3 px-4 rounded-xl font-medium text-sm transition-colors flex items-center justify-center gap-2 ${
+                    downloading
+                      ? "bg-slate-300 dark:bg-slate-700 cursor-not-allowed"
+                      : downloadComplete
+                      ? "bg-green-500 hover:bg-green-600 text-white"
+                      : "bg-sky-500 hover:bg-sky-600 text-white"
+                  } cursor-pointer`}
                 >
-                  <Download className="w-4 h-4" />
-                  立即下载
+                  {downloading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      下载中...
+                    </>
+                  ) : downloadComplete ? (
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      下载完成
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-4 h-4" />
+                      立即下载
+                    </>
+                  )}
                 </button>
 
                 {/* 下载链接显示和复制 - 始终显示以便用户复制 */}
-                <div className="space-y-2">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    或手动复制下载链接：
-                  </p>
-                  <div className="flex gap-2">
-                    <div className="flex-1 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
-                      <p className="text-xs text-slate-600 dark:text-slate-400 font-mono break-all select-text" style={{ wordBreak: 'break-all' }}>
-                        {downloadUrl || getDownloadUrl()}
-                      </p>
+                {!downloading && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      或手动复制下载链接：
+                    </p>
+                    <div className="flex gap-2">
+                      <div className="flex-1 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden">
+                        <p className="text-xs text-slate-600 dark:text-slate-400 font-mono break-all select-text" style={{ wordBreak: 'break-all' }}>
+                          {downloadUrl || getDownloadUrl()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleCopyUrl}
+                        className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors flex items-center gap-1 flex-shrink-0"
+                      >
+                        {copied ? (
+                          <>
+                            <CheckCircle className="w-4 h-4 text-green-500" />
+                            <span className="text-xs">已复制</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-4 h-4" />
+                            <span className="text-xs">复制</span>
+                          </>
+                        )}
+                      </button>
                     </div>
-                    <button
-                      onClick={handleCopyUrl}
-                      className="px-3 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg transition-colors flex items-center gap-1 flex-shrink-0"
-                    >
-                      {copied ? (
-                        <>
-                          <CheckCircle className="w-4 h-4 text-green-500" />
-                          <span className="text-xs">已复制</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-4 h-4" />
-                          <span className="text-xs">复制</span>
-                        </>
-                      )}
-                    </button>
                   </div>
-                </div>
+                )}
 
                 {/* 稍后再说按钮 */}
                 <button

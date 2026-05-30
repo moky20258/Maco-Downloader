@@ -22,6 +22,7 @@ interface PlayerBarProps {
   onVolumeChange: (volume: number) => void;
   onOpenPlaylist?: () => void;
   playlistCount?: number;
+  onToggleLyrics?: () => void;
 }
 
 export function PlayerBar({
@@ -38,7 +39,8 @@ export function PlayerBar({
   volume,
   onVolumeChange,
   onOpenPlaylist,
-  playlistCount = 0
+  playlistCount = 0,
+  onToggleLyrics
 }: PlayerBarProps) {
   const formatTime = (time?: number) => {
     const t = typeof time === "number" ? time : 0;
@@ -66,9 +68,14 @@ export function PlayerBar({
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 100, opacity: 0 }}
         className="fixed bottom-0 left-0 right-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-lg border-t border-slate-200 dark:border-slate-800 px-4 py-3 z-50 shadow-2xl shadow-slate-200/50 dark:shadow-none pb-safe"
+        onClick={onToggleLyrics} // 点击空白处展开歌词
       >
         {/* Mobile Progress Bar */}
-        <div className="absolute top-0 left-0 right-0 md:hidden -mt-3 px-0">
+        <div 
+          className="absolute top-0 left-0 right-0 md:hidden -mt-3 px-0"
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
            <Slider
               min={0}
               max={duration || 100}
@@ -87,10 +94,11 @@ export function PlayerBar({
         <div className="container mx-auto max-w-5xl flex items-center justify-between gap-4">
           {/* Track Info - Left */}
           <div className="flex items-center gap-3 md:gap-4 w-1/4 min-w-[200px] min-w-0">
-            <div className={cn(
-              "w-10 h-10 md:w-12 md:h-12 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden relative flex-shrink-0",
-              isPlaying && "animate-spin-slow"
-            )} style={{ animationDuration: '8s' }}>
+            <div 
+              className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden relative flex-shrink-0 cursor-pointer"
+              onClick={(e) => e.stopPropagation()}
+              style={{ animationDuration: '8s' }}
+            >
               {currentMusic.cover ? (
                 <Image
                   src={currentMusic.cover}
@@ -106,7 +114,10 @@ export function PlayerBar({
                 </div>
               )}
             </div>
-            <div className="flex flex-col overflow-hidden min-w-0">
+            <div 
+              className="flex flex-col overflow-hidden min-w-0 cursor-pointer"
+              onClick={(e) => e.stopPropagation()}
+            >
               <h3 className="font-semibold text-slate-800 dark:text-slate-100 truncate text-sm">{currentMusic.title}</h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{currentMusic.artist}</p>
             </div>
@@ -131,7 +142,10 @@ export function PlayerBar({
               </button>
               {onOpenPlaylist && (
                 <button
-                  onClick={onOpenPlaylist}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenPlaylist?.();
+                  }}
                   className="text-slate-400 dark:text-slate-500 active:text-sky-500 relative"
                   title="播放列表"
                 >
@@ -144,7 +158,10 @@ export function PlayerBar({
                 </button>
               )}
               <button
-                onClick={onTogglePlayMode}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onTogglePlayMode();
+                }}
                 className="text-slate-400 dark:text-slate-500 active:text-sky-500"
                 title={modeLabel}
               >
@@ -156,7 +173,10 @@ export function PlayerBar({
             <div className="hidden md:flex flex-col items-center w-full">
             <div className="flex items-center gap-6 mb-1">
               <button 
-                onClick={onPrev}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPrev?.();
+                }}
                 disabled={!onPrev}
                 className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors disabled:opacity-30 cursor-pointer"
               >
@@ -164,14 +184,20 @@ export function PlayerBar({
               </button>
 
               <button 
-                onClick={onPlayPause}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPlayPause();
+                }}
                 className="w-10 h-10 rounded-full bg-sky-500 hover:bg-sky-600 text-white flex items-center justify-center transition-transform active:scale-95 shadow-lg shadow-sky-500/30 dark:shadow-none cursor-pointer"
               >
                 {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
               </button>
               
               <button 
-                onClick={onNext}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onNext?.();
+                }}
                 disabled={!onNext}
                 className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors disabled:opacity-30 cursor-pointer"
               >
@@ -181,7 +207,11 @@ export function PlayerBar({
             
             <div className="w-full flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500 font-medium">
               <span className="w-10 text-right tabular-nums">{formatTime(currentTime)}</span>
-              <div className="flex-1 px-2">
+              <div 
+                className="flex-1 px-2"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
                 <Slider
                   min={0}
                   max={duration || 100}
@@ -204,7 +234,10 @@ export function PlayerBar({
             {/* Playlist Button */}
             {onOpenPlaylist && (
               <button
-                onClick={onOpenPlaylist}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenPlaylist();
+                }}
                 className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors cursor-pointer relative"
                 title="播放列表"
               >
@@ -219,7 +252,10 @@ export function PlayerBar({
             
             {/* Play Mode Button */}
             <button
-              onClick={onTogglePlayMode}
+              onClick={(e) => {
+                e.stopPropagation();
+                onTogglePlayMode();
+              }}
               className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors cursor-pointer"
               title={modeLabel}
             >
@@ -228,12 +264,19 @@ export function PlayerBar({
             
             <div className="flex items-center gap-2 group w-32">
               <button 
-                onClick={() => onVolumeChange(volume === 0 ? 1 : 0)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onVolumeChange(volume === 0 ? 1 : 0);
+                }}
                 className="text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 transition-colors cursor-pointer"
               >
                 {volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
               </button>
-              <div className="flex-1 w-24">
+              <div 
+                className="flex-1 w-24"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
                 <Slider
                   min={0}
                   max={1}
