@@ -37,6 +37,7 @@ export function UpdateChecker() {
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgress | null>(null);
   const [downloadComplete, setDownloadComplete] = useState(false);
+  const [downloadedFilePath, setDownloadedFilePath] = useState<string>("");
 
   // 获取应用当前版本号
   useEffect(() => {
@@ -138,6 +139,18 @@ export function UpdateChecker() {
   };
 
   const handleDownload = async () => {
+    // 如果已经下载完成，打开文件进行安装
+    if (downloadComplete && downloadedFilePath) {
+      try {
+        const { open } = await import('@tauri-apps/plugin-shell');
+        await open(downloadedFilePath);
+        console.log("Opened installer:", downloadedFilePath);
+      } catch (error) {
+        console.error("Failed to open installer:", error);
+      }
+      return;
+    }
+
     const url = getDownloadUrl();
     if (!url) {
       console.error("No download URL available");
@@ -152,6 +165,7 @@ export function UpdateChecker() {
         setDownloading(true);
         setDownloadProgress(null);
         setDownloadComplete(false);
+        setDownloadedFilePath("");
         
         // 获取文件名
         const filename = latestRelease?.assets.find(a => a.browser_download_url === url)?.name || "update.exe";
@@ -164,6 +178,7 @@ export function UpdateChecker() {
         });
         
         console.log("Download completed:", result);
+        setDownloadedFilePath(result);
         setDownloadComplete(true);
         setDownloading(false);
       } catch (error) {
@@ -315,18 +330,6 @@ export function UpdateChecker() {
                 </div>
               </div>
 
-              {/* Release Notes */}
-              {latestRelease.body && (
-                <div className="space-y-2">
-                  <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-                    更新内容：
-                  </h3>
-                  <div className="max-h-40 overflow-y-auto p-3 bg-slate-50 dark:bg-slate-800 rounded-lg text-xs text-slate-600 dark:text-slate-400 whitespace-pre-wrap">
-                    {latestRelease.body}
-                  </div>
-                </div>
-              )}
-
               {/* Action Buttons */}
               <div className="space-y-3 pt-2">
                 {/* 下载进度条 */}
@@ -385,7 +388,7 @@ export function UpdateChecker() {
                   ) : downloadComplete ? (
                     <>
                       <CheckCircle className="w-4 h-4" />
-                      下载完成
+                      打开安装程序
                     </>
                   ) : (
                     <>
