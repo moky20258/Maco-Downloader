@@ -1347,7 +1347,8 @@ export default function Home() {
       if (playing) audio.play().catch(() => setPlaying(false));
     };
     
-    // 添加音频错误处理 - 这是防止卡死的关键！
+    // 添加音频错误处理 - 仅用于解锁，不自动跳转
+    // 真正的失败处理由 handlePlay 的 catch 块负责
     // 使用标记来区分是真正的错误还是我们主动清空src导致的错误
     const handleAudioError = (e: Event) => {
       // 如果是主动清空src导致的错误，忽略
@@ -1358,21 +1359,15 @@ export default function Home() {
       }
       
       const audio = e.target as HTMLAudioElement;
-      console.error('[Audio Error] Audio element encountered an error', audio.error);
+      console.warn('[Audio Error] Audio element encountered an error', audio.error);
       
-      // 立即解锁，防止卡死
+      // 只负责解锁，不自动跳转
+      // 让 handlePlay 的 catch 块来负责跳转逻辑
       if (isPlaybackLockedRef.current) {
+        console.log('[Audio Error] Unlocking playback, letting handlePlay catch decide next action');
         isPlaybackLockedRef.current = false;
       }
-      
-      // 使用pendingMusicRef而不是activeMusic，确保能获取到真正失败的歌曲
-      const failedMusic = pendingMusicRef.current || activeMusic;
-      
-      // 如果有当前播放的歌曲，尝试跳到下一首
-      if (failedMusic) {
-        console.log(`[Audio Error] Auto-skipping to next song: ${failedMusic.title}`);
-        handlePlayNextOnFailure(failedMusic, `音频加载失败，跳到下一首`);
-      }
+      // ❌ 不调用 handlePlayNextOnFailure，避免重复跳转
     };
     
     const handleEnded = () => {
