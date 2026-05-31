@@ -1343,8 +1343,17 @@ export default function Home() {
     };
     
     // 添加音频错误处理 - 这是防止卡死的关键！
-    const handleAudioError = () => {
-      console.error('[Audio Error] Audio element encountered an error');
+    const handleAudioError = (e: Event) => {
+      const audio = e.target as HTMLAudioElement;
+      
+      // 如果src为空或者是被手动清空的，忽略这个错误
+      // 因为我们主动清空src时会触发error事件
+      if (!audio.src || audio.src === window.location.href) {
+        console.log('[Audio Error] Ignoring error from empty/cleared src');
+        return;
+      }
+      
+      console.error('[Audio Error] Audio element encountered an error', audio.error);
       
       // 立即解锁，防止卡死
       if (isPlaybackLockedRef.current) {
