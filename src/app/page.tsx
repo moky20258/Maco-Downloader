@@ -464,6 +464,9 @@ export default function Home() {
   // 用于跟踪真正正在尝试播放的歌曲（与UI显示的activeMusic可能不同步）
   const pendingMusicRef = useRef<MusicItem | null>(null);
   
+  // 用于标记是否正在主动清空src，防止误触发error事件
+  const isClearingSrcRef = useRef<boolean>(false);
+  
   // 统一的播放失败处理函数
   const handlePlayNextOnFailure = (currentItem: MusicItem, failureReason: string) => {
     console.warn(`[Playback Failure] ${failureReason} for ${currentItem.title}`);
@@ -585,6 +588,8 @@ export default function Home() {
       // 停止当前播放
       if (audioRef.current) {
         audioRef.current.pause();
+        // 设置标记，防止清空src触发的error事件被误处理
+        isClearingSrcRef.current = true;
         audioRef.current.src = ''; // 清空src，停止加载
       }
       
@@ -1343,16 +1348,16 @@ export default function Home() {
     };
     
     // 添加音频错误处理 - 这是防止卡死的关键！
+    // 使用标记来区分是真正的错误还是我们主动清空src导致的错误
     const handleAudioError = (e: Event) => {
-      const audio = e.target as HTMLAudioElement;
-      
-      // 如果src为空或者是被手动清空的，忽略这个错误
-      // 因为我们主动清空src时会触发error事件
-      if (!audio.src || audio.src === window.location.href) {
-        console.log('[Audio Error] Ignoring error from empty/cleared src');
+      // 如果是主动清空src导致的错误，忽略
+      if (isClearingSrcRef.current) {
+        console.log('[Audio Error] Ignoring error from manual src clear');
+        isClearingSrcRef.current = false;
         return;
       }
       
+      const audio = e.target as HTMLAudioElement;
       console.error('[Audio Error] Audio element encountered an error', audio.error);
       
       // 立即解锁，防止卡死
