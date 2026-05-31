@@ -461,6 +461,89 @@ export default function Home() {
     return -1;
   };
 
+  // 用于跟踪真正正在尝试播放的歌曲（与UI显示的activeMusic可能不同步）
+  const pendingMusicRef = useRef<MusicItem | null>(null);
+  
+  // 统一的播放失败处理函数
+  const handlePlayNextOnFailure = (currentItem: MusicItem, failureReason: string) => {
+    console.warn(`[Playback Failure] ${failureReason} for ${currentItem.title}`);
+    showToast(failureReason);
+    
+    // 立即解锁，确保可以播放下一首
+    isPlaybackLockedRef.current = false;
+    
+    // 清除pending状态
+    if (pendingMusicRef.current?.id === currentItem.id && pendingMusicRef.current?.provider === currentItem.provider) {
+      pendingMusicRef.current = null;
+    }
+    
+    // 基于传入的 currentItem 计算下一首，而不是基于闭包中的 activeMusic
+    // 这样可以避免状态不一致导致的无限循环问题
+    const nextItem = (() => {
+      // 先尝试在播放列表中查找
+      const playlistIndex = playlist.findIndex(p => p.id === currentItem.id && p.provider === currentItem.provider);
+      const isFromPlaylist = playlistIndex >= 0;
+      
+      if (isFromPlaylist) {
+        // 从播放列表中找下一首
+        if (playMode === "shuffle") {
+          // 随机播放
+          if (playlist.length <= 1) return null;
+          let randomIndex;
+          do {
+            randomIndex = Math.floor(Math.random() * playlist.length);
+          } while (randomIndex === playlistIndex);
+          return playlist[randomIndex];
+        }
+        // 顺序播放
+        if (playlistIndex < playlist.length - 1) {
+          return playlist[playlistIndex + 1];
+        }
+        return null;
+      }
+      
+      // 从搜索结果列表中找下一首
+      const resultsIndex = results.findIndex(r => r.id === currentItem.id && r.provider === currentItem.provider);
+      
+      if (playMode === "shuffle") {
+        // 随机播放
+        if (shuffleIndex >= 0 && shuffleIndex < shuffleOrder.length - 1) {
+          const nextId = shuffleOrder[shuffleIndex + 1];
+          const nextResult = results.find(r => r.id === nextId);
+          return nextResult || null;
+        }
+        return null;
+      }
+      
+      // 顺序播放
+      if (resultsIndex >= 0 && resultsIndex < results.length - 1) {
+        return results[resultsIndex + 1];
+      }
+      return null;
+    })();
+    
+    // 延迟调用，确保状态已更新
+    setTimeout(() => {
+      // 再次确保锁已释放
+      isPlaybackLockedRef.current = false;
+      
+      if (nextItem) {
+        // 有下一首，自动播放
+        console.log(`[Playback Failure] Auto-playing next song: ${nextItem.title}`);
+        handlePlay(nextItem);
+      } else {
+        // 没有下一首（列表结束），停止播放但保持UI显示
+        console.log('[Playback Failure] No next song available, keeping current UI for manual navigation');
+        setPlaying(false);
+        // 不清空 activeMusic，保持UI显示，让用户可以手动切换上一首或重新点击播放
+        // 这样用户可以：
+        // 1. 点击“上一首”按钮
+        // 2. 在播放列表中点击其他歌曲
+        // 3. 重新点击当前歌曲尝试播放
+      }
+    }, 200);
+  };
+
   const handlePlay = async (item: MusicItem, event?: React.MouseEvent) => {
     // 如果点击的是当前正在播放的歌曲，切换播放/暂停
     if (activeMusic?.id === item.id && activeMusic?.provider === item.provider) {
@@ -480,9 +563,24 @@ export default function Home() {
       return;
     }
 
+    // 添加全局超时保护，防止任何情况下永久卡死
+    const globalTimeout = setTimeout(() => {
+      if (isPlaybackLockedRef.current) {
+        console.error(`[Global Timeout] Playback locked for too long, force unlocking`);
+        isPlaybackLockedRef.current = false;
+        setActiveMusic(null);
+        setPlaying(false);
+        pendingMusicRef.current = null;
+        showToast('播放超时，请重试');
+      }
+    }, 30000); // 30秒全局超时
+
     try {
       // 锁定播放，防止并发请求
       isPlaybackLockedRef.current = true;
+      
+      // 记录正在尝试播放的歌曲
+      pendingMusicRef.current = item;
       
       // 停止当前播放
       if (audioRef.current) {
@@ -502,6 +600,8 @@ export default function Home() {
       
       // 检查是否已被取消（用户可能又点击了其他歌曲）
       if (!isPlaybackLockedRef.current) {
+        clearTimeout(globalTimeout);
+        pendingMusicRef.current = null;
         return;
       }
       
@@ -510,27 +610,17 @@ export default function Home() {
         const targetElement = event?.currentTarget as HTMLElement | undefined;
         showToast(`《${item.title}》仅支持下载，不支持在线播放`, targetElement);
         setActiveMusic(null); // 清除当前播放状态
+        pendingMusicRef.current = null;
         isPlaybackLockedRef.current = false; // 解锁
+        clearTimeout(globalTimeout);
         return;
       }
       
       if (!url || !audioRef.current) {
         // 获取URL失败，提示用户并跳到下一首
-        console.warn(`无法获取《${item.title}》的播放链接`);
-        showToast(`无法获取《${item.title}》的播放链接，跳到下一首`);
-        setActiveMusic(null);
-        isPlaybackLockedRef.current = false; // 先解锁
-        // 延迟调用，确保状态已更新
-        setTimeout(() => {
-          const nextIndex = getNextIndex();
-          if (nextIndex >= 0) {
-            if (isPlayingFromPlaylist) {
-              handlePlay(playlist[nextIndex]);
-            } else {
-              handlePlay(results[nextIndex]);
-            }
-          }
-        }, 100);
+        clearTimeout(globalTimeout);
+        pendingMusicRef.current = null;
+        handlePlayNextOnFailure(item, `无法获取《${item.title}》的播放链接，跳到下一首`);
         return;
       }
       
@@ -541,65 +631,25 @@ export default function Home() {
       // 添加超时机制，防止永久卡住
       const playTimeout = setTimeout(() => {
         if (isPlaybackLockedRef.current && !playing) {
-          console.warn(`歌曲《${item.title}》加载超时，自动跳到下一首`);
-          showToast(`《${item.title}》加载超时，跳到下一首`);
-          
-          // 先解锁
-          isPlaybackLockedRef.current = false;
-          
-          // 清空当前播放状态
-          setActiveMusic(null);
-          setPlaying(false);
-          
-          // 跳到下一首
-          setTimeout(() => {
-            // 再次确保锁已释放
-            isPlaybackLockedRef.current = false;
-            
-            const nextIndex = getNextIndex();
-            if (nextIndex >= 0) {
-              if (isPlayingFromPlaylist) {
-                handlePlay(playlist[nextIndex]);
-              } else {
-                handlePlay(results[nextIndex]);
-              }
-            }
-          }, 300); // 增加延迟到300ms
+          clearTimeout(globalTimeout);
+          pendingMusicRef.current = null;
+          handlePlayNextOnFailure(item, `《${item.title}》加载超时，跳到下一首`);
         }
       }, 10000); // 10秒超时
       
       try {
         await audioRef.current.play();
         clearTimeout(playTimeout);
+        clearTimeout(globalTimeout);
         setPlaying(true);
-        // 播放成功，解锁
+        // 播放成功，解锁并清除pending
         isPlaybackLockedRef.current = false;
+        pendingMusicRef.current = null;
       } catch (playError) {
         clearTimeout(playTimeout);
-        console.error("Play failed", playError);
-        showToast(`《${item.title}》播放失败，跳到下一首`);
-        
-        // 先解锁，确保可以播放下一首
-        isPlaybackLockedRef.current = false;
-        
-        // 清空当前播放状态
-        setActiveMusic(null);
-        setPlaying(false);
-        
-        // 延迟调用，确保状态已更新
-        setTimeout(() => {
-          // 再次确保锁已释放
-          isPlaybackLockedRef.current = false;
-          
-          const nextIndex = getNextIndex();
-          if (nextIndex >= 0) {
-            if (isPlayingFromPlaylist) {
-              handlePlay(playlist[nextIndex]);
-            } else {
-              handlePlay(results[nextIndex]);
-            }
-          }
-        }, 300); // 增加延迟到300ms
+        clearTimeout(globalTimeout);
+        pendingMusicRef.current = null;
+        handlePlayNextOnFailure(item, `《${item.title}》播放失败，跳到下一首`);
         return;
       }
       
@@ -609,29 +659,9 @@ export default function Home() {
       }
     } catch (err) {
       console.error('handlePlay error:', err);
-      showToast(`播放《${item.title}》时发生错误，跳到下一首`);
-      
-      // 先解锁
-      isPlaybackLockedRef.current = false;
-      
-      // 清空当前播放状态
-      setActiveMusic(null);
-      setPlaying(false);
-      
-      // 延迟调用，确保状态已更新
-      setTimeout(() => {
-        // 再次确保锁已释放
-        isPlaybackLockedRef.current = false;
-        
-        const nextIndex = getNextIndex();
-        if (nextIndex >= 0) {
-          if (isPlayingFromPlaylist) {
-            handlePlay(playlist[nextIndex]);
-          } else {
-            handlePlay(results[nextIndex]);
-          }
-        }
-      }, 300); // 增加延迟到300ms
+      clearTimeout(globalTimeout);
+      pendingMusicRef.current = null;
+      handlePlayNextOnFailure(item, `播放《${item.title}》时发生错误，跳到下一首`);
     }
   };
 
@@ -1152,6 +1182,22 @@ export default function Home() {
       } else {
         handlePlay(results[nextIndex]);
       }
+    } else {
+      // 如果没有下一首，确保解锁
+      isPlaybackLockedRef.current = false;
+      
+      // 如果当前有播放列表，循环到第一首
+      if (isPlayingFromPlaylist && playlist.length > 0) {
+        console.log('[Next] Reached end of playlist, looping to first');
+        handlePlay(playlist[0]);
+      } else if (!isPlayingFromPlaylist && results.length > 0 && playMode === "single") {
+        // 单曲循环模式，重新播放当前歌曲
+        if (activeMusic) {
+          console.log('[Next] Single loop mode, replaying current');
+          handlePlay(activeMusic);
+        }
+      }
+      // 其他情况：列表结束，保持当前状态，允许用户手动操作
     }
   };
   
@@ -1170,6 +1216,22 @@ export default function Home() {
       } else {
         handlePlay(results[prevIndex]);
       }
+    } else {
+      // 如果没有上一首，确保解锁
+      isPlaybackLockedRef.current = false;
+      
+      // 如果当前有播放列表，循环到最后一首
+      if (isPlayingFromPlaylist && playlist.length > 0) {
+        console.log('[Prev] Reached start of playlist, looping to last');
+        handlePlay(playlist[playlist.length - 1]);
+      } else if (!isPlayingFromPlaylist && results.length > 0 && playMode === "single") {
+        // 单曲循环模式，重新播放当前歌曲
+        if (activeMusic) {
+          console.log('[Prev] Single loop mode, replaying current');
+          handlePlay(activeMusic);
+        }
+      }
+      // 其他情况：列表开始，保持当前状态，允许用户手动操作
     }
   };
 
@@ -1279,6 +1341,26 @@ export default function Home() {
       
       if (playing) audio.play().catch(() => setPlaying(false));
     };
+    
+    // 添加音频错误处理 - 这是防止卡死的关键！
+    const handleAudioError = () => {
+      console.error('[Audio Error] Audio element encountered an error');
+      
+      // 立即解锁，防止卡死
+      if (isPlaybackLockedRef.current) {
+        isPlaybackLockedRef.current = false;
+      }
+      
+      // 使用pendingMusicRef而不是activeMusic，确保能获取到真正失败的歌曲
+      const failedMusic = pendingMusicRef.current || activeMusic;
+      
+      // 如果有当前播放的歌曲，尝试跳到下一首
+      if (failedMusic) {
+        console.log(`[Audio Error] Auto-skipping to next song: ${failedMusic.title}`);
+        handlePlayNextOnFailure(failedMusic, `音频加载失败，跳到下一首`);
+      }
+    };
+    
     const handleEnded = () => {
       if (playMode === "single") {
         if (audioRef.current) {
@@ -1312,11 +1394,13 @@ export default function Home() {
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('loadedmetadata', handleLoadedMetadata);
     audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('error', handleAudioError); // 添加错误监听
 
     return () => {
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('loadedmetadata', handleLoadedMetadata);
       audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('error', handleAudioError); // 清理事件监听
     };
   }, [playing, playMode, results, playlist, activeMusic, shuffleIndex, shuffleOrder, isPlayingFromPlaylist, handlePlay]);
 
