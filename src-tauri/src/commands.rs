@@ -120,7 +120,7 @@ async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<
                 album: item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 cover: item.get("cover").and_then(|v| v.as_str()).map(to_absolute_url),
                 duration,
-                size: None,
+                size: item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string()),
                 provider: provider.to_string(),
             })
         })
@@ -1541,4 +1541,29 @@ pub async fn download_update(
     eprintln!("[Update Download] Download completed successfully");
     
     Ok(path_buf.to_string_lossy().to_string())
+}
+
+#[command]
+pub async fn open_download_folder(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    
+    // 获取下载目录路径
+    let download_dir = app.path().download_dir()
+        .map_err(|e| format!("Failed to get download directory: {}", e))?;
+    
+    eprintln!("[Open Folder] Opening download directory: {:?}", download_dir);
+    
+    // 使用系统默认程序打开文件夹
+    let folder_url = format!("file:///{}", download_dir.to_string_lossy().replace("\\", "/"));
+    
+    // 使用 Tauri shell 打开（虽然已弃用但仍然可用）
+    #[allow(deprecated)]
+    {
+        use tauri_plugin_shell::ShellExt;
+        let shell = app.shell();
+        shell.open(folder_url, None)
+            .map_err(|e| format!("Failed to open folder: {}", e))?;
+    }
+    
+    Ok(())
 }

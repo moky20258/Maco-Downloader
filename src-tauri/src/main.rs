@@ -14,6 +14,7 @@ fn main() {
             commands::download_music,
             commands::get_lyrics,
             commands::download_update,
+            commands::open_download_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

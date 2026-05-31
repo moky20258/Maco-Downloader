@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Download, CheckCircle2, AlertCircle, Trash2, Music, Loader2 } from 'lucide-react';
+import { X, Download, CheckCircle2, AlertCircle, Trash2, Music, Loader2, FolderOpen } from 'lucide-react';
 import { DownloadTask } from '@/types/download';
 import { cn } from '@/lib/utils';
 import Image from 'next/image';
@@ -11,6 +11,7 @@ interface DownloadDrawerProps {
   tasks: DownloadTask[];
   onRemoveTask: (taskId: string) => void;
   onClearCompleted: () => void;
+  onOpenFolder?: () => void;
 }
 
 export function DownloadDrawer({
@@ -18,7 +19,8 @@ export function DownloadDrawer({
   onClose,
   tasks,
   onRemoveTask,
-  onClearCompleted
+  onClearCompleted,
+  onOpenFolder
 }: DownloadDrawerProps) {
   // Sort tasks: downloading first, then recent
   const sortedTasks = [...tasks].sort((a, b) => {
@@ -118,18 +120,25 @@ export function DownloadDrawer({
                         <h3 className="font-medium text-sm text-slate-700 dark:text-slate-200 truncate pr-2">
                           {task.musicItem.title}
                         </h3>
-                        <span className={cn(
-                          "text-xs font-medium flex-shrink-0",
-                          task.status === 'completed' && "text-green-500",
-                          task.status === 'error' && "text-red-500",
-                          task.status === 'downloading' && "text-sky-500",
-                          task.status === 'pending' && "text-slate-400"
-                        )}>
-                          {task.status === 'completed' && '已完成'}
-                          {task.status === 'error' && '失败'}
-                          {task.status === 'downloading' && `${Math.round(task.progress)}%`}
-                          {task.status === 'pending' && '等待中'}
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {task.musicItem.size && task.status === 'completed' && (
+                            <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">
+                              {task.musicItem.size}
+                            </span>
+                          )}
+                          <span className={cn(
+                            "text-xs font-medium",
+                            task.status === 'completed' && "text-green-500",
+                            task.status === 'error' && "text-red-500",
+                            task.status === 'downloading' && "text-sky-500",
+                            task.status === 'pending' && "text-slate-400"
+                          )}>
+                            {task.status === 'completed' && '已完成'}
+                            {task.status === 'error' && '失败'}
+                            {task.status === 'downloading' && `${Math.round(task.progress)}%`}
+                            {task.status === 'pending' && '等待中'}
+                          </span>
+                        </div>
                       </div>
                       
                       {/* Progress Bar */}
@@ -166,7 +175,16 @@ export function DownloadDrawer({
 
             {/* Footer */}
             {tasks.some(t => t.status === 'completed' || t.status === 'error') && (
-              <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+              <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 space-y-2">
+                {onOpenFolder && (
+                  <button
+                    onClick={onOpenFolder}
+                    className="w-full py-2 px-4 bg-sky-500 hover:bg-sky-600 text-white rounded-xl text-sm font-medium transition-colors flex items-center justify-center gap-2"
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    打开下载文件夹
+                  </button>
+                )}
                 <button
                   onClick={onClearCompleted}
                   className="w-full py-2 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center justify-center gap-2"

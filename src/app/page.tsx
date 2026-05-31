@@ -13,7 +13,7 @@ import { LyricsPanel } from "@/components/LyricsPanel";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { DownloadTask } from "@/types/download";
 import axios from "axios";
-import { searchMusic, getMusicUrl, downloadMusic } from "@/lib/tauri-api";
+import { searchMusic, getMusicUrl, downloadMusic, openDownloadFolder } from "@/lib/tauri-api";
 
 const SourceLinkButton = ({ item }: { item: MusicItem }) => {
   const handleClick = (e: React.MouseEvent) => {
@@ -734,6 +734,13 @@ export default function Home() {
             item.id === itemId ? { ...item, size: sizeStr } : item
           ));
           
+          // 更新下载任务中的 size
+          setDownloadTasks(prev => prev.map(task => 
+            task.musicItem.id === itemId 
+              ? { ...task, musicItem: { ...task.musicItem, size: sizeStr } } 
+              : task
+          ));
+          
           // 如果当前正在播放这首歌，也更新 activeMusic
           setActiveMusic(prev => {
             if (prev && prev.id === itemId) {
@@ -1034,6 +1041,20 @@ export default function Home() {
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(results.map(r => r.id)));
+    }
+  };
+
+  const handleClearCompleted = () => {
+    setDownloadTasks(prev => prev.filter(t => t.status === 'downloading' || t.status === 'pending'));
+  };
+
+  const handleOpenFolder = async () => {
+    try {
+      await openDownloadFolder();
+    } catch (error) {
+      console.error('Failed to open download folder:', error);
+      // 在非 Tauri 环境中，可以显示提示或使用浏览器下载目录
+      alert('此功能仅在桌面应用中可用');
     }
   };
 
@@ -1794,7 +1815,8 @@ export default function Home() {
           onClose={() => setIsDrawerOpen(false)}
           tasks={downloadTasks}
           onRemoveTask={(taskId) => setDownloadTasks(prev => prev.filter(t => t.id !== taskId))}
-          onClearCompleted={() => setDownloadTasks(prev => prev.filter(t => t.status === 'downloading' || t.status === 'pending'))}
+          onClearCompleted={handleClearCompleted}
+          onOpenFolder={handleOpenFolder}
         />
       ) : null}
 

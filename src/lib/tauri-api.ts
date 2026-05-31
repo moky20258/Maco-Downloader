@@ -105,3 +105,18 @@ export async function getLyrics(
     return { lyrics: '', hasLyrics: false };
   }
 }
+
+// 打开下载文件夹
+export async function openDownloadFolder(): Promise<void> {
+  if (isTauri()) {
+    try {
+      await invoke('open_download_folder');
+    } catch (error) {
+      console.error('Tauri open download folder error:', error);
+      throw error;
+    }
+  } else {
+    console.warn('Not in Tauri environment');
+    throw new Error('Open folder not available');
+  }
+}
