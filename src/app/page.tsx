@@ -13,7 +13,7 @@ import { LyricsPanel } from "@/components/LyricsPanel";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { DownloadTask } from "@/types/download";
 import axios from "axios";
-import { searchMusic, getMusicUrl, downloadMusic, openDownloadFolder } from "@/lib/tauri-api";
+import { searchMusic, getMusicUrl, downloadMusic, openDownloadFolder, isTauri } from "@/lib/tauri-api";
 
 const SourceLinkButton = ({ item }: { item: MusicItem }) => {
   const handleClick = (e: React.MouseEvent) => {
@@ -194,10 +194,13 @@ export default function Home() {
       // 清除超时定时器
       clearTimeout(timeoutId);
       
-      setResults(items);
+      // 过滤掉不可播放的歌曲
+      const playableItems = await filterUnplayableSongs(items);
+      
+      setResults(playableItems);
       
       // 搜索完成后，在后台异步获取每首歌的时长
-      fetchDurationsForResults(items);
+      fetchDurationsForResults(playableItems);
     } catch (err) {
       console.error('[Search] Search failed:', err);
       // 清除超时定时器
@@ -401,10 +404,13 @@ export default function Home() {
       
       console.log('[Random Listen] Final results to display:', finalResults.length);
       
-      setResults(finalResults);
+      // 过滤掉不可播放的歌曲
+      const playableResults = await filterUnplayableSongs(finalResults);
+      
+      setResults(playableResults);
             
       // 在后台异步获取每首歌的时长
-      fetchDurationsForResults(finalResults);
+      fetchDurationsForResults(playableResults);
     } catch (err) {
       console.error('Random listen failed:', err);
       // 清除超时定时器
@@ -882,6 +888,82 @@ export default function Home() {
       }
       console.error('Error in fetchDurationsForResults:', error);
     }
+  };
+
+  // 批量检查并过滤不可播放的歌曲
+  const filterUnplayableSongs = async (items: MusicItem[]): Promise<MusicItem[]> => {
+    // 只在Tauri环境下进行筛选(开发环境无法真正检查)
+    if (!isTauri()) {
+      console.log('[Filter] Skipping filter in non-Tauri environment');
+      return items;
+    }
+    
+    console.log('[Filter] Checking playability for', items.length, 'songs');
+    
+    // 限制并发数量，避免过多请求
+    const batchSize = 3; // 降低并发数,增加验证步骤
+    const playableItems: MusicItem[] = [];
+    let filteredCount = 0;
+    
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize);
+      
+      const results = await Promise.all(
+        batch.map(async (item) => {
+          try {
+            const { url, downloadOnly } = await getMusicUrl(item.id, item.provider || 'gequbao');
+            
+            // 判断1: URL是否为空(无法获取播放链接)
+            if (!url || url.trim() === '') {
+              console.log('[Filter] Song not playable (empty URL):', item.title);
+              filteredCount++;
+              return null;
+            }
+            
+            // 判断2: 过滤掉仅支持下载的歌曲
+            if (downloadOnly) {
+              console.log('[Filter] Song not playable (download only):', item.title);
+              filteredCount++;
+              return null;
+            }
+            
+            // 判断3: 尝试验证URL是否真正可访问(HEAD请求)
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 3000); // 3秒超时
+              
+              const response = await fetch(url, {
+                method: 'HEAD',
+                mode: 'no-cors', // 避免CORS问题
+                signal: controller.signal,
+              });
+              
+              clearTimeout(timeoutId);
+              
+              // 如果请求成功(即使opaque也算成功),说明URL可访问
+              console.log('[Filter] Song playable (URL verified):', item.title);
+              return item;
+            } catch (fetchError) {
+              // HEAD请求失败,可能是URL无效或网络问题
+              console.log('[Filter] Song not playable (URL fetch failed):', item.title, fetchError);
+              filteredCount++;
+              return null;
+            }
+          } catch (error) {
+            // 判断4: 获取URL失败(后端报错) = 不可播放
+            console.log('[Filter] Song not playable (get URL failed):', item.title);
+            filteredCount++;
+            return null;
+          }
+        })
+      );
+      
+      // 过滤掉 null 值（不可播放的歌曲）
+      playableItems.push(...results.filter((item): item is MusicItem => item !== null));
+    }
+    
+    console.log('[Filter] Filtered results:', playableItems.length, 'playable,', filteredCount, 'filtered out of', items.length);
+    return playableItems;
   };
 
   const handleSeek = (time: number) => {

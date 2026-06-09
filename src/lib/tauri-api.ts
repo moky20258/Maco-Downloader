@@ -36,13 +36,13 @@ export async function searchMusic(query: string, provider: string): Promise<Musi
 export async function getMusicUrl(id: string, provider: string): Promise<{ url: string; downloadOnly: boolean }> {
   if (isTauri()) {
     try {
-      const response = await invoke<{ url: string }>('get_music_url', {
+      const response = await invoke<{ url: string; download_only?: boolean }>('get_music_url', {
         id,
         provider,
       });
       
-      // 检查是否为仅下载链接
-      const downloadOnly = response.url.startsWith('DOWNLOAD_ONLY:');
+      // 优先使用后端的download_only字段,其次手动检测URL前缀
+      const downloadOnly = response.download_only ?? response.url.startsWith('DOWNLOAD_ONLY:');
       const url = downloadOnly ? response.url.replace('DOWNLOAD_ONLY:', '') : response.url;
       
       return { url, downloadOnly };

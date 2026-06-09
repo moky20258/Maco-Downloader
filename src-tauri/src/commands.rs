@@ -747,7 +747,10 @@ pub async fn get_music_url(id: String, provider: String) -> Result<UrlResponse, 
         }
     };
 
-    Ok(UrlResponse { url, download_only: None })
+    // 检查URL是否包含DOWNLOAD_ONLY:前缀
+    let download_only = url.starts_with("DOWNLOAD_ONLY:");
+    
+    Ok(UrlResponse { url, download_only: Some(download_only) })
 }
 
 #[command]
