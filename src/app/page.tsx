@@ -58,6 +58,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [provider, setProvider] = useState("jianbin-kugou");
   const [results, setResults] = useState<MusicItem[]>([]);
+  const [downloadOnlyResults, setDownloadOnlyResults] = useState<MusicItem[]>([]); // 仅支持下载的歌曲
   const [loading, setLoading] = useState(false);
   const [randomLoading, setRandomLoading] = useState(false);
   const [isRandomListen, setIsRandomListen] = useState(false);
@@ -194,13 +195,15 @@ export default function Home() {
       // 清除超时定时器
       clearTimeout(timeoutId);
       
-      // 过滤掉不可播放的歌曲
-      const playableItems = await filterUnplayableSongs(items);
-      
-      setResults(playableItems);
+      // 立即显示所有搜索结果(提升用户体验)
+      setResults(items);
+      setDownloadOnlyResults([]); // 初始时没有仅下载的歌曲
       
       // 搜索完成后，在后台异步获取每首歌的时长
-      fetchDurationsForResults(playableItems);
+      fetchDurationsForResults(items);
+      
+      // 异步过滤不可播放的歌曲(不阻塞UI)
+      filterAndRemoveUnplayableSongs(items);
     } catch (err) {
       console.error('[Search] Search failed:', err);
       // 清除超时定时器
@@ -404,13 +407,15 @@ export default function Home() {
       
       console.log('[Random Listen] Final results to display:', finalResults.length);
       
-      // 过滤掉不可播放的歌曲
-      const playableResults = await filterUnplayableSongs(finalResults);
-      
-      setResults(playableResults);
+      // 立即显示所有结果(提升用户体验)
+      setResults(finalResults);
+      setDownloadOnlyResults([]);
             
       // 在后台异步获取每首歌的时长
-      fetchDurationsForResults(playableResults);
+      fetchDurationsForResults(finalResults);
+      
+      // 异步过滤不可播放的歌曲(不阻塞UI)
+      filterAndRemoveUnplayableSongs(finalResults);
     } catch (err) {
       console.error('Random listen failed:', err);
       // 清除超时定时器
@@ -891,11 +896,11 @@ export default function Home() {
   };
 
   // 批量检查并过滤不可播放的歌曲
-  const filterUnplayableSongs = async (items: MusicItem[]): Promise<MusicItem[]> => {
+  const filterUnplayableSongs = async (items: MusicItem[]): Promise<{ playable: MusicItem[]; downloadOnly: MusicItem[] }> => {
     // 只在Tauri环境下进行筛选(开发环境无法真正检查)
     if (!isTauri()) {
       console.log('[Filter] Skipping filter in non-Tauri environment');
-      return items;
+      return { playable: items, downloadOnly: [] };
     }
     
     console.log('[Filter] Checking playability for', items.length, 'songs');
@@ -903,6 +908,7 @@ export default function Home() {
     // 限制并发数量，避免过多请求
     const batchSize = 3; // 降低并发数,增加验证步骤
     const playableItems: MusicItem[] = [];
+    const downloadOnlyItems: MusicItem[] = [];
     let filteredCount = 0;
     
     for (let i = 0; i < items.length; i += batchSize) {
@@ -917,14 +923,13 @@ export default function Home() {
             if (!url || url.trim() === '') {
               console.log('[Filter] Song not playable (empty URL):', item.title);
               filteredCount++;
-              return null;
+              return { type: 'unplayable', item: null };
             }
             
-            // 判断2: 过滤掉仅支持下载的歌曲
+            // 判断2: 仅支持下载的歌曲,标记但保留
             if (downloadOnly) {
-              console.log('[Filter] Song not playable (download only):', item.title);
-              filteredCount++;
-              return null;
+              console.log('[Filter] Song download only:', item.title);
+              return { type: 'download-only', item };
             }
             
             // 判断3: 尝试验证URL是否真正可访问(HEAD请求)
@@ -942,28 +947,124 @@ export default function Home() {
               
               // 如果请求成功(即使opaque也算成功),说明URL可访问
               console.log('[Filter] Song playable (URL verified):', item.title);
-              return item;
+              return { type: 'playable', item };
             } catch (fetchError) {
               // HEAD请求失败,可能是URL无效或网络问题
               console.log('[Filter] Song not playable (URL fetch failed):', item.title, fetchError);
               filteredCount++;
-              return null;
+              return { type: 'unplayable', item: null };
             }
           } catch (error) {
             // 判断4: 获取URL失败(后端报错) = 不可播放
             console.log('[Filter] Song not playable (get URL failed):', item.title);
             filteredCount++;
-            return null;
+            return { type: 'unplayable', item: null };
           }
         })
       );
       
-      // 过滤掉 null 值（不可播放的歌曲）
-      playableItems.push(...results.filter((item): item is MusicItem => item !== null));
+      // 分类处理结果
+      results.forEach((result) => {
+        if (result.type === 'playable' && result.item) {
+          playableItems.push(result.item);
+        } else if (result.type === 'download-only' && result.item) {
+          downloadOnlyItems.push(result.item);
+        }
+      });
     }
     
-    console.log('[Filter] Filtered results:', playableItems.length, 'playable,', filteredCount, 'filtered out of', items.length);
-    return playableItems;
+    console.log('[Filter] Results:', playableItems.length, 'playable,', downloadOnlyItems.length, 'download-only,', filteredCount, 'filtered out of', items.length);
+    return { playable: playableItems, downloadOnly: downloadOnlyItems };
+  };
+
+  // 异步过滤并移除不可播放的歌曲(不阻塞UI)
+  const filterAndRemoveUnplayableSongs = async (items: MusicItem[]) => {
+    // 只在Tauri环境下进行筛选
+    if (!isTauri()) {
+      return;
+    }
+    
+    console.log('[Async Filter] Starting async filter for', items.length, 'songs');
+    
+    // 限制并发数量
+    const batchSize = 3;
+    const unplayableIds = new Set<string>(); // 记录不可播放的歌曲ID
+    const downloadOnlyIds = new Set<string>(); // 记录仅下载的歌曲ID
+    
+    for (let i = 0; i < items.length; i += batchSize) {
+      const batch = items.slice(i, i + batchSize);
+      
+      const checks = await Promise.all(
+        batch.map(async (item) => {
+          try {
+            const { url, downloadOnly } = await getMusicUrl(item.id, item.provider || 'gequbao');
+            
+            // 判断1: URL为空
+            if (!url || url.trim() === '') {
+              return { id: item.id, provider: item.provider, status: 'unplayable' };
+            }
+            
+            // 判断2: 仅支持下载
+            if (downloadOnly) {
+              return { id: item.id, provider: item.provider, status: 'download-only' };
+            }
+            
+            // 判断3: 验证URL可访问性
+            try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 3000);
+              
+              await fetch(url, {
+                method: 'HEAD',
+                mode: 'no-cors',
+                signal: controller.signal,
+              });
+              
+              clearTimeout(timeoutId);
+              return { id: item.id, provider: item.provider, status: 'playable' };
+            } catch {
+              return { id: item.id, provider: item.provider, status: 'unplayable' };
+            }
+          } catch {
+            return { id: item.id, provider: item.provider, status: 'unplayable' };
+          }
+        })
+      );
+      
+      // 收集结果
+      checks.forEach((check) => {
+        if (check.status === 'unplayable') {
+          unplayableIds.add(`${check.id}::${check.provider}`);
+        } else if (check.status === 'download-only') {
+          downloadOnlyIds.add(`${check.id}::${check.provider}`);
+        }
+      });
+      
+      // 每批检查后,立即更新UI移除不可播放的歌曲
+      if (unplayableIds.size > 0) {
+        setResults(prev => prev.filter(item => {
+          const key = `${item.id}::${item.provider}`;
+          return !unplayableIds.has(key);
+        }));
+        console.log('[Async Filter] Removed', unplayableIds.size, 'unplayable songs so far');
+      }
+      
+      // 更新仅下载的歌曲列表
+      if (downloadOnlyIds.size > 0) {
+        const allDownloadOnly = items.filter(item => {
+          const key = `${item.id}::${item.provider}`;
+          return downloadOnlyIds.has(key);
+        });
+        setDownloadOnlyResults(allDownloadOnly);
+      }
+      
+      // 批次间稍微延迟
+      if (i + batchSize < items.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    
+    console.log('[Async Filter] Completed: removed', unplayableIds.size, 'unplayable,', downloadOnlyIds.size, 'download-only');
   };
 
   const handleSeek = (time: number) => {
@@ -1767,17 +1868,26 @@ export default function Home() {
                   {results.map((item) => {
                     const isActive = activeMusic?.id === item.id;
                     const isSelected = selectedIds.has(item.id);
+                    const isDownloadOnly = downloadOnlyResults.some(d => d.id === item.id && d.provider === item.provider);
                     
                     return (
                       <motion.div 
                         key={item.id}
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
-                        onDoubleClick={(e) => handlePlay(item, e)}
+                        onDoubleClick={(e) => {
+                          if (isDownloadOnly) {
+                            e.stopPropagation();
+                            showToast(`《${item.title}》仅支持下载，不支持在线播放`, e.currentTarget);
+                            return;
+                          }
+                          handlePlay(item, e);
+                        }}
                         className={cn(
                           "grid gap-4 p-4 items-center hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all duration-200 group cursor-pointer select-none active:scale-[0.99] rounded-xl",
                           listGridTemplate,
-                          isActive && "bg-sky-50/50 dark:bg-sky-900/20"
+                          isActive && "bg-sky-50/50 dark:bg-sky-900/20",
+                          isDownloadOnly && "opacity-75" // 仅下载的歌曲稍微透明
                         )}
                       >
                         {downloadEnabled ? (
@@ -1798,8 +1908,18 @@ export default function Home() {
 
                         <div className="flex items-center gap-3 overflow-hidden">
                           <div 
-                            onClick={(e) => { e.stopPropagation(); handlePlay(item, e); }}
-                            className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden flex-shrink-0 cursor-pointer relative group/cover"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isDownloadOnly) {
+                                showToast(`《${item.title}》仅支持下载，不支持在线播放`, e.currentTarget);
+                                return;
+                              }
+                              handlePlay(item, e);
+                            }}
+                            className={cn(
+                              "w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden flex-shrink-0 relative group/cover",
+                              isDownloadOnly ? "cursor-not-allowed" : "cursor-pointer"
+                            )}
                           >
                             {item.cover ? (
                               <Image
@@ -1848,20 +1968,48 @@ export default function Home() {
                         </div>
 
                         <div className="flex justify-end pr-2 md:pr-2 gap-2">
+                          {/* 播放按钮 */}
                           <button
-                            onClick={(e) => { e.stopPropagation(); handlePlay(item, e); }}
-                            className="p-2 text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
-                            title="播放"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isDownloadOnly) {
+                                showToast(`《${item.title}》仅支持下载，不支持在线播放`, e.currentTarget);
+                                return;
+                              }
+                              handlePlay(item, e);
+                            }}
+                            className={cn(
+                              "p-2 rounded-full transition-colors cursor-pointer",
+                              isDownloadOnly
+                                ? "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                : "text-slate-400 dark:text-slate-500 hover:text-sky-500 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-slate-800"
+                            )}
+                            title={isDownloadOnly ? "仅支持下载" : "播放"}
                           >
                             <Play className="w-5 h-5" />
                           </button>
+                          
+                          {/* 添加到播放列表按钮 */}
                           <button
-                            onClick={(e) => { e.stopPropagation(); addToPlaylist(item, e); }}
-                            className="p-2 text-slate-400 dark:text-slate-500 hover:text-green-500 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-slate-800 rounded-full transition-colors cursor-pointer"
-                            title="添加到播放列表"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isDownloadOnly) {
+                                showToast(`《${item.title}》仅支持下载，不支持在线播放`, e.currentTarget);
+                                return;
+                              }
+                              addToPlaylist(item, e);
+                            }}
+                            className={cn(
+                              "p-2 rounded-full transition-colors cursor-pointer",
+                              isDownloadOnly
+                                ? "text-slate-300 dark:text-slate-600 cursor-not-allowed"
+                                : "text-slate-400 dark:text-slate-500 hover:text-green-500 dark:hover:text-green-400 hover:bg-green-50 dark:hover:bg-slate-800"
+                            )}
+                            title={isDownloadOnly ? "仅支持下载" : "添加到播放列表"}
                           >
                             <ListPlus className="w-5 h-5" />
                           </button>
+                          
                           {/* <SourceLinkButton item={item} /> */}
                           {downloadEnabled ? (
                             <button
