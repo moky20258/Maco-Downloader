@@ -56,7 +56,7 @@ type PlayMode = "order" | "shuffle" | "single";
 
 export default function Home() {
   const [query, setQuery] = useState("");
-  const [provider, setProvider] = useState("jianbin-kugou");
+  const [provider, setProvider] = useState("qqmp3");
   const [results, setResults] = useState<MusicItem[]>([]);
   const [downloadOnlyResults, setDownloadOnlyResults] = useState<MusicItem[]>([]); // 仅支持下载的歌曲
   const [loading, setLoading] = useState(false);
@@ -226,6 +226,13 @@ export default function Home() {
 
   // 随便听听：随机搜索热门关键词，获取20首歌曲
   const randomAbortControllerRef = useRef<AbortController | null>(null);
+  // 搜索过程中逐步暂存已返回的结果，供超时/手动停止时使用
+  const randomPartialResultsRef = useRef<MusicItem[]>([]);
+
+  // 手动停止随便听听
+  const handleStopRandomListen = () => {
+    randomAbortControllerRef.current?.abort();
+  };
 
   const handleRandomListen = async () => {
     if (randomLoading) return;
@@ -242,14 +249,24 @@ export default function Home() {
     }
     randomAbortControllerRef.current = new AbortController();
     const { signal } = randomAbortControllerRef.current;
-    
-    // 超时控制：15秒后自动停止
+    randomPartialResultsRef.current = [];
+
+    // 超时控制：15秒后自动停止；手动停止按钮也会触发 abort
     const timeoutId = setTimeout(() => {
       if (!signal.aborted) {
         console.warn('[Random Listen] Timeout after 15s, aborting...');
         randomAbortControllerRef.current?.abort();
       }
     }, 15000);
+
+    // 竞速哨兵：signal 被中止时立即结束等待（Tauri invoke 不支持取消，只能不再等待）
+    const abortRace = new Promise<never>((_, reject) => {
+      if (signal.aborted) {
+        reject(new Error('aborted'));
+        return;
+      }
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
       
     // 按类型分类的热门搜索词库（50+个关键词）
     const hotKeywordsByCategory = {
@@ -345,6 +362,9 @@ export default function Home() {
           } else {
             errorCount++;
           }
+
+          // 暂存已返回的结果，超时/手动停止时仍可展示部分结果
+          randomPartialResultsRef.current.push(...items);
           
           return items;
         } catch (err) {
@@ -355,15 +375,34 @@ export default function Home() {
       });
             
       console.log('[Random Listen] Waiting for all searches to complete...');
-      const resultsArray = await Promise.all(searchPromises);
-      console.log('[Random Listen] All searches completed');
+      // 竞速：所有搜索完成 或 超时/手动停止（取先到者），不再死等慢请求
+      let resultsArray: MusicItem[][];
+      try {
+        resultsArray = await Promise.race([
+          Promise.all(searchPromises),
+          abortRace,
+        ]);
+      } catch {
+        // 被中止：中止前已返回的结果已暂存在 randomPartialResultsRef
+        randomAbortControllerRef.current?.abort();
+        resultsArray = [];
+      }
+      console.log('[Random Listen] All searches completed or aborted');
       
       // 检查是否被取消
       if (signal.aborted) {
         console.log('[Random Listen] Request was aborted, stopping...');
-        // 检查是否有部分结果
+        // 合并已完成的结果与中止前暂存的部分结果
         for (const items of resultsArray) {
           allResults.push(...items);
+        }
+        const seen = new Set(allResults.map(i => `${i.provider}-${i.id}`));
+        for (const item of randomPartialResultsRef.current) {
+          const key = `${item.provider}-${item.id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            allResults.push(item);
+          }
         }
         
         if (allResults.length === 0) {
@@ -1650,18 +1689,18 @@ export default function Home() {
           </div>
           <div className="flex justify-center mb-6 gap-3 flex-wrap">
             {[
-              // 暂时只显示已实现的provider
-              { id: 'bugu', name: '布谷' },
-              { id: 'qq', name: 'QQ音乐' },
-              { id: 'jianbin-netease', name: '煎饼-网易' },
-              { id: 'jianbin-qq', name: '煎饼-qq' },
-              { id: 'jianbin-kugou', name: '煎饼-酷狗' },
-              { id: 'jianbin-kuwo', name: '煎饼-酷我' },
-              // { id: 'gequbao', name: '歌曲宝' }, // 暂时隐藏
-              // { id: 'gequhai', name: '歌曲海' }, // 暂时隐藏
+              // 可用源优先；布谷原域名已关站（后端改走同框架站点），歌曲宝被Cloudflare拦截（后端改走歌曲海），网易云/QQ/酷狗/酷我四源已改为平台官方接口直连
               { id: 'qqmp3', name: 'QQMP3' },
-              // { id: 'migu', name: '咪咕' }, // 暂时隐藏（版权限制201007）
+              { id: 'qq', name: 'QQ音乐' },
+              { id: 'gequbao', name: '歌曲宝' },
+              { id: 'gequhai', name: '歌曲海' },
               { id: 'livepoo', name: '力音' },
+              { id: 'bugu', name: '布谷' },
+              { id: 'jianbin-netease', name: '网易云' },
+              { id: 'jianbin-qq', name: 'QQ音乐(备用)' },
+              { id: 'jianbin-kugou', name: '酷狗' },
+              { id: 'jianbin-kuwo', name: '酷我' },
+              // { id: 'migu', name: '咪咕' }, // 暂时隐藏（播放接口版权限制201007）
             ].map((p) => (
               <button
                 key={p.id}
@@ -1701,23 +1740,28 @@ export default function Home() {
                 </button>
               </div>
             </form>
-            {/* 随便听听按钮 - 放在搜索框右侧 */}
-            <button
-              type="button"
-              onClick={handleRandomListen}
-              disabled={randomLoading}
-              className="flex-shrink-0 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-full px-5 h-12 font-medium transition-all active:scale-95 disabled:opacity-70 flex items-center gap-2 cursor-pointer shadow-lg shadow-purple-200/50 dark:shadow-none"
-              title="随机发现好听的音乐"
-            >
-              {randomLoading ? (
+            {/* 随便听听按钮 - 放在搜索框右侧；加载中变为停止按钮，可手动终止 */}
+            {randomLoading ? (
+              <button
+                type="button"
+                onClick={handleStopRandomListen}
+                className="flex-shrink-0 bg-gradient-to-r from-gray-500 to-gray-600 hover:from-gray-600 hover:to-gray-700 text-white rounded-full px-5 h-12 font-medium transition-all active:scale-95 flex items-center gap-2 cursor-pointer shadow-lg shadow-gray-200/50 dark:shadow-none"
+                title="停止随机搜索"
+              >
                 <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <>
-                  <Shuffle className="w-5 h-5" />
-                  <span className="hidden sm:inline">随便听听</span>
-                </>
-              )}
-            </button>
+                <span className="hidden sm:inline">停止</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleRandomListen}
+                className="flex-shrink-0 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white rounded-full px-5 h-12 font-medium transition-all active:scale-95 flex items-center gap-2 cursor-pointer shadow-lg shadow-purple-200/50 dark:shadow-none"
+                title="随机发现好听的音乐"
+              >
+                <Shuffle className="w-5 h-5" />
+                <span className="hidden sm:inline">随便听听</span>
+              </button>
+            )}
           </div>
 
           {/* Hot Tags */}

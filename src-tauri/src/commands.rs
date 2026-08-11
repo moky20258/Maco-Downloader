@@ -9,8 +9,19 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use futures_util::StreamExt;
 use tauri::Emitter;
 
-const JBSOU_BASE: &str = "https://www.jbsou.cn/";
 const VKEYS_BASE: &str = "https://api.vkeys.cn";
+
+// 按字节长度安全截断字符串，避免在多字节字符中间切片导致 panic
+fn safe_truncate(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 // TODO: 后续实现这些provider时启用
 // const GEQUHAI_BASE: &str = "https://www.gequhai.com";
 // const LIVEPOO_BASE: &str = "https://www.livepoo.cn";
@@ -26,9 +37,10 @@ pub async fn search_music(query: String, provider: String) -> Result<SearchRespo
     if provider.starts_with("jianbin") {
         search_jianbin(&client, &query, &provider).await
     } else if provider == "gequbao" {
-        search_gequbao(&client, &query).await
+        // gequbao.com 已被 Cloudflare 拦截，复用可用的 gequhai 镜像实现
+        search_gequhai(&client, &query, "gequbao").await
     } else if provider == "gequhai" {
-        search_gequhai(&client, &query).await
+        search_gequhai(&client, &query, "gequhai").await
     } else if provider == "bugu" {
         search_bugu(&client, &query).await
     } else if provider == "qq" {
@@ -40,106 +52,205 @@ pub async fn search_music(query: String, provider: String) -> Result<SearchRespo
     } else if provider == "livepoo" {
         search_livepoo(&client, &query).await
     } else {
-        // 默认使用 bugu
-        search_bugu(&client, &query).await
+        // 默认使用 qqmp3（布谷源已失效）
+        search_qqmp3(&client, &query).await
     }
 }
 
+// jbsou.cn 服务端已失效（所有平台搜索均返回404），煎饼系源改为对应平台官方接口直连
 async fn search_jianbin(client: &Client, query: &str, provider: &str) -> Result<SearchResponse, String> {
     eprintln!("[Jianbin] Searching: query='{}', provider='{}'", query, provider);
-    
-    let source = match provider {
-        "jianbin-kugou" => "kugou",
-        "jianbin-qq" => "qq",
-        "jianbin-netease" => "netease",
-        "jianbin-kuwo" => "kuwo",
-        _ => "kugou",
+
+    let mut resp = match provider {
+        "jianbin-kugou" => search_jianbin_kugou(client, query).await?,
+        "jianbin-netease" => search_jianbin_netease(client, query).await?,
+        "jianbin-kuwo" => search_jianbin_kuwo(client, query).await?,
+        // 煎饼-QQ 复用 QQ音乐(vkeys) 搜索实现
+        _ => search_qq(client, query).await?,
     };
+    for item in resp.items.iter_mut() {
+        item.provider = provider.to_string();
+    }
+    eprintln!("[Jianbin] Returning {} items", resp.items.len());
+    Ok(resp)
+}
 
-    let mut params = HashMap::new();
-    params.insert("input", query);
-    params.insert("filter", "name");
-    params.insert("type", source);
-    params.insert("page", "1");
+// 去掉接口返回文本中的 HTML 标签（如搜索关键词高亮 <em>）
+fn strip_html_tags(s: &str) -> String {
+    Regex::new(r"<[^>]+>")
+        .map(|re| re.replace_all(s, "").to_string())
+        .unwrap_or_else(|_| s.to_string())
+}
 
-    eprintln!("[Jianbin] Requesting: {} with source={}", JBSOU_BASE, source);
-    
-    let response = client.post(JBSOU_BASE)
-        .form(&params)
-        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36")
-        .header("accept", "application/json, text/javascript, */*; q=0.01")
-        .header("origin", "https://www.jbsou.cn")
-        .header("referer", "https://www.jbsou.cn/")
-        .header("x-requested-with", "XMLHttpRequest")
+// 煎饼-酷狗：酷狗移动端搜索接口
+async fn search_jianbin_kugou(client: &Client, query: &str) -> Result<SearchResponse, String> {
+    let response = client.get("http://mobilecdn.kugou.com/api/v3/search/song")
+        .query(&[("keyword", query), ("page", "1"), ("pagesize", "30"), ("showtype", "0")])
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
 
-    let body = response.text()
+    let json: serde_json::Value = response.json()
         .await
-        .map_err(|e| format!("Read response failed: {}", e))?;
-
-    eprintln!("[Jianbin] Response length: {}", body.len());
-    eprintln!("[Jianbin] Response preview: {}", &body[..body.len().min(200)]);
-
-    // 解析 JSON
-    let json: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
 
-    // 提取 data 数组
-    let data = json.get("data")
-        .and_then(|d| d.as_array())
+    let list = json.get("data")
+        .and_then(|d| d.get("info"))
+        .and_then(|v| v.as_array())
         .ok_or("Invalid response format")?;
 
-    eprintln!("[Jianbin] Found {} items in data array", data.len());
-
-    let items: Vec<MusicItem> = data.iter()
+    let items: Vec<MusicItem> = list.iter()
         .filter_map(|item| {
-            let url = item.get("url")?.as_str()?;
-            let absolute_url = to_absolute_url(url);
-            
-            // 尝试提取时长信息
-            let duration = item.get("duration")
+            let hash = item.get("hash")?.as_str()?;
+            let title = strip_html_tags(item.get("songname").and_then(|v| v.as_str()).unwrap_or("未知歌曲"));
+            let artist = strip_html_tags(item.get("singername").and_then(|v| v.as_str()).unwrap_or("未知歌手"));
+            let album = item.get("album_name")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| {
-                    // 如果API返回的是数字（秒数），转换为 MM:SS 格式
-                    item.get("duration")
-                        .and_then(|v| v.as_i64())
-                        .map(|secs| {
-                            let minutes = secs / 60;
-                            let seconds = secs % 60;
-                            format!("{}:{:02}", minutes, seconds)
-                        })
-                });
-            
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let duration = item.get("duration")
+                .and_then(|v| v.as_i64())
+                .map(|secs| format!("{}:{:02}", secs / 60, secs % 60));
+            let size = item.get("filesize")
+                .and_then(|v| v.as_f64())
+                .map(|b| format!("{:.1}MB", b / 1024.0 / 1024.0));
+
             Some(MusicItem {
-                id: percent_encoding::utf8_percent_encode(&absolute_url, percent_encoding::NON_ALPHANUMERIC).to_string(),
-                title: item.get("name").and_then(|v| v.as_str()).unwrap_or("未知歌曲").to_string(),
-                artist: item.get("artist").and_then(|v| v.as_str()).unwrap_or("未知歌手").to_string(),
-                album: item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                cover: item.get("cover").and_then(|v| v.as_str()).map(to_absolute_url),
+                id: hash.to_string(),
+                title,
+                artist: if artist.is_empty() { "未知歌手".to_string() } else { artist },
+                album,
+                cover: None,
                 duration,
-                size: item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                provider: provider.to_string(),
+                size,
+                provider: "jianbin-kugou".to_string(),
             })
         })
-        .filter(|item| !item.id.is_empty())
         .collect();
-
-    eprintln!("[Jianbin] Returning {} items", items.len());
 
     Ok(SearchResponse { items })
 }
 
-fn to_absolute_url(url: &str) -> String {
-    if url.starts_with("http") {
-        url.to_string()
-    } else {
-        format!("{}{}", JBSOU_BASE, url.trim_start_matches('/'))
-    }
+// 煎饼-网易：网易云官方搜索接口
+async fn search_jianbin_netease(client: &Client, query: &str) -> Result<SearchResponse, String> {
+    let mut params = HashMap::new();
+    params.insert("s", query);
+    params.insert("type", "1");
+    params.insert("limit", "30");
+    params.insert("offset", "0");
+
+    let response = client.post("https://music.163.com/api/search/get")
+        .form(&params)
+        .header("referer", "https://music.163.com/")
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let json: serde_json::Value = response.json()
+        .await
+        .map_err(|e| format!("Parse JSON failed: {}", e))?;
+
+    let songs = json.get("result")
+        .and_then(|r| r.get("songs"))
+        .and_then(|v| v.as_array())
+        .ok_or("Invalid response format")?;
+
+    let items: Vec<MusicItem> = songs.iter()
+        .filter_map(|item| {
+            let id = item.get("id")?.as_i64()?.to_string();
+            let title = item.get("name").and_then(|v| v.as_str()).unwrap_or("未知歌曲").to_string();
+            let artist = item.get("artists")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|a| a.get("name").and_then(|n| n.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("/"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "未知歌手".to_string());
+            let album = item.get("album")
+                .and_then(|a| a.get("name"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let duration = item.get("duration")
+                .and_then(|v| v.as_i64())
+                .map(|ms| {
+                    let secs = ms / 1000;
+                    format!("{}:{:02}", secs / 60, secs % 60)
+                });
+
+            Some(MusicItem {
+                id,
+                title,
+                artist,
+                album,
+                cover: None,
+                duration,
+                size: None,
+                provider: "jianbin-netease".to_string(),
+            })
+        })
+        .collect();
+
+    Ok(SearchResponse { items })
 }
 
+// 煎饼-酷我：酷我旧版搜索接口
+async fn search_jianbin_kuwo(client: &Client, query: &str) -> Result<SearchResponse, String> {
+    let response = client.get("http://search.kuwo.cn/r.s")
+        .query(&[("all", query), ("ft", "music"), ("pn", "0"), ("rn", "30"),
+                 ("encoding", "utf8"), ("rformat", "json"), ("mobi", "1")])
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let text = response.text()
+        .await
+        .map_err(|e| format!("Read response failed: {}", e))?;
+
+    let json: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("Parse JSON failed: {}", e))?;
+
+    let list = json.get("abslist")
+        .and_then(|v| v.as_array())
+        .ok_or("Invalid response format")?;
+
+    let items: Vec<MusicItem> = list.iter()
+        .filter_map(|item| {
+            let rid = item.get("MUSICRID")?.as_str()?;
+            let id = rid.trim_start_matches("MUSIC_").to_string();
+            let title = item.get("SONGNAME").and_then(|v| v.as_str()).unwrap_or("未知歌曲").to_string();
+            let artist = item.get("ARTIST")
+                .and_then(|v| v.as_str())
+                .map(|s| s.replace('&', "/"))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "未知歌手".to_string());
+            let duration = item.get("DURATION")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|secs| format!("{}:{:02}", secs / 60, secs % 60));
+
+            Some(MusicItem {
+                id,
+                title,
+                artist,
+                album: None,
+                cover: None,
+                duration,
+                size: None,
+                provider: "jianbin-kuwo".to_string(),
+            })
+        })
+        .collect();
+
+    Ok(SearchResponse { items })
+}
+
+// 获取gequbao搜索（原站已被Cloudflare拦截，保留实现仅作备用）
+#[allow(dead_code)]
 async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, String> {
     // 访问搜索页面
     let encoded = utf8_percent_encode(query, NON_ALPHANUMERIC).to_string();
@@ -252,7 +363,7 @@ async fn search_gequbao(client: &Client, query: &str) -> Result<SearchResponse, 
     Ok(SearchResponse { items })
 }
 
-async fn search_gequhai(client: &Client, query: &str) -> Result<SearchResponse, String> {
+async fn search_gequhai(client: &Client, query: &str, provider_name: &str) -> Result<SearchResponse, String> {
     // 访问搜索页面
     let encoded = utf8_percent_encode(query, NON_ALPHANUMERIC).to_string();
     let url = format!("https://www.gequhai.com/s/{}", encoded);
@@ -299,7 +410,7 @@ async fn search_gequhai(client: &Client, query: &str) -> Result<SearchResponse, 
                 cover: None,
                 duration: None, // gequhai搜索页面不提供时长信息
                 size: None,
-                provider: "gequhai".to_string(),
+                provider: provider_name.to_string(),
             })
         })
         .collect();
@@ -307,56 +418,61 @@ async fn search_gequhai(client: &Client, query: &str) -> Result<SearchResponse, 
     Ok(SearchResponse { items })
 }
 
+// 布谷原域名 buguyy.top/.cc 均已失联，改用同框架在线站点 liziyy.top
+const BUGU_BASE: &str = "https://liziyy.top";
+
 async fn search_bugu(client: &Client, query: &str) -> Result<SearchResponse, String> {
-    let response = client.get("https://buguyy.top/api/search")
-        .query(&[("keyword", query)])
-        .header("accept", "application/json, text/plain, */*")
-        .header("origin", "https://buguyy.top")
-        .header("referer", "https://buguyy.top/")
+    let encoded = utf8_percent_encode(query, NON_ALPHANUMERIC).to_string();
+    let url = format!("{}/search?keyword={}&page=0", BUGU_BASE, encoded);
+
+    let response = client.get(&url)
+        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
 
-    let json: serde_json::Value = response.json()
+    let html = response.text()
         .await
-        .map_err(|e| format!("Parse JSON failed: {}", e))?;
+        .map_err(|e| format!("Read response failed: {}", e))?;
 
-    // 新API格式: data直接是数组; 旧API格式: data.list是数组
-    let list = if let Some(arr) = json.get("data").and_then(|d| d.as_array()) {
-        arr
-    } else if let Some(arr) = json.get("data").and_then(|d| d.get("list")).and_then(|l| l.as_array()) {
-        arr
-    } else {
-        return Err("Invalid response format".to_string());
-    };
+    // 瀑布流卡片结构：div.music-card > a[href="/music/info.html?id=MUSIC_xxx"]
+    let document = Html::parse_document(&html);
+    let card_selector = Selector::parse("div.music-card a[href]").map_err(|e| format!("Parse selector failed: {}", e))?;
+    let name_selector = Selector::parse("div.music-name").map_err(|e| format!("Parse selector failed: {}", e))?;
+    let singer_selector = Selector::parse("div.music-singer").map_err(|e| format!("Parse selector failed: {}", e))?;
+    let cover_selector = Selector::parse("img.music-cover").map_err(|e| format!("Parse selector failed: {}", e))?;
 
-    let items: Vec<MusicItem> = list.iter()
-        .filter_map(|item| {
-            // id 可能是数字或字符串，需要兼容处理
-            let id = if let Some(s) = item.get("id").and_then(|v| v.as_str()) {
-                s.to_string()
-            } else if let Some(n) = item.get("id").and_then(|v| v.as_i64()) {
-                n.to_string()
-            } else {
+    let items: Vec<MusicItem> = document.select(&card_selector)
+        .filter_map(|el| {
+            let href = el.value().attr("href")?;
+            // 提取 MUSIC_xxx 中的数字ID
+            let id = href.split("id=MUSIC_").nth(1)?.split('&').next()?.to_string();
+
+            let title = el.select(&name_selector).next()?
+                .text().collect::<Vec<_>>().join("").trim().to_string();
+            let artist = el.select(&singer_selector).next()
+                .map(|s| s.text().collect::<Vec<_>>().join("").trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "未知歌手".to_string());
+            let cover = el.select(&cover_selector).next()
+                .and_then(|s| s.value().attr("src"))
+                .filter(|s| s.starts_with("http"))
+                .map(|s| s.to_string());
+
+            if id.is_empty() || title.is_empty() {
                 return None;
-            };
-            
-            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("未知歌曲");
-            let artist = item.get("singer").and_then(|v| v.as_str()).unwrap_or("未知歌手");
-            let album = item.get("album").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let cover = item.get("picurl").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let duration = item.get("duration").and_then(|v| v.as_str()).map(|s| s.to_string());
-            let size = item.get("size").and_then(|v| v.as_str()).map(|s| s.to_string());
-            
+            }
+
             Some(MusicItem {
                 id,
-                title: title.to_string(),
-                artist: artist.to_string(),
-                album,
+                title,
+                artist,
+                album: None,
                 cover,
-                duration,
-                size,
+                duration: None,
+                size: None,
                 provider: "bugu".to_string(),
             })
         })
@@ -443,7 +559,7 @@ async fn search_qqmp3(client: &Client, query: &str) -> Result<SearchResponse, St
         .map_err(|e| format!("Read response failed: {}", e))?;
 
     // 调试输出
-    eprintln!("QQMP3 response: {}", &text[..text.len().min(200)]);
+    eprintln!("QQMP3 response: {}", safe_truncate(&text, 200));
 
     let json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| format!("Parse JSON failed: {}", e))?;
@@ -731,15 +847,21 @@ pub async fn get_music_url(id: String, provider: String) -> Result<UrlResponse, 
         .map_err(|e| format!("Failed to create client: {}", e))?;
 
     let url = match provider.as_str() {
-        "gequbao" => get_gequbao_play_url(&client, &id).await?,
+        // gequbao.com 已被 Cloudflare 拦截，搜索/播放均复用 gequhai 镜像实现
+        "gequbao" => get_gequhai_play_url(&client, &id).await?,
         "gequhai" => get_gequhai_play_url(&client, &id).await?,
         "bugu" => get_bugu_play_url(&client, &id).await?,
         "qq" => get_qq_play_url(&client, &id).await?,
         "qqmp3" => get_qqmp3_play_url(&client, &id).await?,
         "migu" => get_migu_play_url(&client, &id).await?,
         "livepoo" => get_livepoo_play_url(&client, &id).await?,
+        // 煎饼系列：按子源路由到对应平台播放接口
+        "jianbin-qq" => get_qq_play_url(&client, &id).await?,
+        "jianbin-netease" => get_netease_play_url(&id)?,
+        "jianbin-kugou" => get_kugou_play_url(&client, &id).await?,
+        "jianbin-kuwo" => get_kuwo_play_url(&client, &id).await?,
         _ => {
-            // jianbin系列：id就是URL
+            // 其他源：id就是URL
             let decoded = percent_encoding::percent_decode_str(&id)
                 .decode_utf8()
                 .map_err(|e| format!("Decode failed: {}", e))?;
@@ -793,7 +915,8 @@ pub async fn download_music(id: String, _filename: String, provider: String) -> 
     Ok(bytes.to_vec())
 }
 
-// 获取gequbao播放URL
+// 获取gequbao播放URL（原站已被Cloudflare拦截，保留实现仅作备用）
+#[allow(dead_code)]
 async fn get_gequbao_play_url(client: &Client, id: &str) -> Result<String, String> {
     // 访问音乐页面获取play_id
     let page_url = format!("https://www.gequbao.com/music/{}", id);
@@ -880,7 +1003,7 @@ async fn get_gequbao_play_url(client: &Client, id: &str) -> Result<String, Strin
                         .await
                         .map_err(|e| format!("Read API response failed: {}", e))?;
                     
-                    eprintln!("Gequbao API response: {}", &text[..text.len().min(200)]);
+                    eprintln!("Gequbao API response: {}", safe_truncate(&text, 200));
 
                     let api_json: serde_json::Value = serde_json::from_str(&text)
                         .map_err(|e| format!("Parse API response failed: {}", e))?;
@@ -972,7 +1095,7 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
         .map_err(|e| format!("Read API response failed: {}", e))?;
         
     eprintln!("[Gequhai] API response length: {}", text.len());
-    eprintln!("[Gequhai] API response: {}", &text[..text.len().min(500)]);
+    eprintln!("[Gequhai] API response: {}", safe_truncate(&text, 500));
     
     let api_json: serde_json::Value = serde_json::from_str(&text)
         .map_err(|e| {
@@ -998,23 +1121,23 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
         if let Some(captures) = re.captures(&html) {
             if let Some(extra_url) = captures.get(1) {
                 let encoded_url = extra_url.as_str();
-                eprintln!("[Gequhai] Found mp3_extra_url (encoded): {}", &encoded_url[..encoded_url.len().min(200)]);
+                eprintln!("[Gequhai] Found mp3_extra_url (encoded): {}", safe_truncate(encoded_url, 200));
                 
                 // Base64解码 (先将#替换为H，然后Base64解码)
                 let b64_str = encoded_url.replace('#', "H");
-                eprintln!("[Gequhai] Base64 string: {}", &b64_str[..b64_str.len().min(200)]);
+                eprintln!("[Gequhai] Base64 string: {}", safe_truncate(&b64_str, 200));
                 
                 use base64::{Engine as _, engine::general_purpose::STANDARD};
                 if let Ok(decoded_bytes) = STANDARD.decode(&b64_str) {
                     if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
-                        eprintln!("[Gequhai] Decoded URL: {}", &decoded_str[..decoded_str.len().min(200)]);
+                        eprintln!("[Gequhai] Decoded URL: {}", safe_truncate(&decoded_str, 200));
                         
                         // 检查是否为网盘链接（仅支持下载）
                         if decoded_str.contains("pan.quark.cn") || decoded_str.contains("pan.baidu.com") {
                             eprintln!("[Gequhai] Detected cloud drive URL, adding DOWNLOAD_ONLY marker");
                             // 添加特殊前缀标记，前端检测到后会提示用户
                             let marked_url = format!("DOWNLOAD_ONLY:{}", decoded_str);
-                            eprintln!("[Gequhai] Marked URL: {}", &marked_url[..marked_url.len().min(200)]);
+                            eprintln!("[Gequhai] Marked URL: {}", safe_truncate(&marked_url, 200));
                             return Ok(marked_url);
                         }
                         
@@ -1029,37 +1152,43 @@ async fn get_gequhai_play_url(client: &Client, id: &str) -> Result<String, Strin
     Err(format!("Failed to get gequhai play URL - no url in API response (play_id: {})", play_id))
 }
 
-// 获取bugu播放URL
+// 获取bugu播放URL（liziyy.top 详情页内嵌 music_mp3Url 直链）
 async fn get_bugu_play_url(client: &Client, id: &str) -> Result<String, String> {
-    let response = client.get("https://buguyy.top/api/geturl")
-        .query(&[("id", id)])
-        .header("accept", "application/json, text/plain, */*")
-        .header("origin", "https://buguyy.top")
-        .header("referer", "https://buguyy.top/")
+    let info_url = format!("{}/music/info.html?id=MUSIC_{}", BUGU_BASE, id);
+    let response = client.get(&info_url)
+        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .header("referer", &format!("{}/", BUGU_BASE))
         .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .send()
         .await
         .map_err(|e| format!("Request failed: {}", e))?;
 
-    // 先获取文本，以便调试
-    let text = response.text()
+    let html = response.text()
         .await
         .map_err(|e| format!("Read response failed: {}", e))?;
-    
-    eprintln!("[Bugu] API response: {}", &text[..text.len().min(200)]);
 
-    // 尝试解析JSON
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| format!("Parse JSON failed: {}", e))?;
-
-    // 新API格式: {"success":true,"url":"..."} ; 旧API格式: {"data":{"url":"..."}}
-    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
-        Ok(url.to_string())
-    } else if let Some(url) = json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
-        Ok(url.to_string())
-    } else {
-        Err("Failed to get play URL".to_string())
+    // 页面内JSON存在 \/ 转义："music_mp3Url":"http:\/\/xxx.mp3..."
+    if let Some(idx) = html.find("music_mp3Url") {
+        let rest = &html[idx..];
+        if let Some(http_idx) = rest.find("http") {
+            let url_part = &rest[http_idx..];
+            if let Some(end) = url_part.find('"') {
+                let raw = &url_part[..end];
+                let url = raw
+                    .replace("\\\\", "\\")
+                    .replace("\\/", "/")
+                    .trim_end_matches('\\')
+                    .to_string();
+                if url.starts_with("http") && url.contains("://") {
+                    eprintln!("[Bugu] Got mp3 url from info page: {}", safe_truncate(&url, 100));
+                    return Ok(url);
+                }
+            }
+        }
     }
+
+    Err("Failed to get play URL".to_string())
 }
 
 // 获取qq播放URL
@@ -1093,6 +1222,56 @@ async fn get_qq_play_url(client: &Client, id: &str) -> Result<String, String> {
     }
     
     Err("Failed to get play URL".to_string())
+}
+
+// 获取酷狗播放直链（m.kugou.com getSongInfo）
+async fn get_kugou_play_url(client: &Client, hash: &str) -> Result<String, String> {
+    let response = client.get("http://m.kugou.com/app/i/getSongInfo.php")
+        .query(&[("cmd", "playInfo"), ("hash", hash)])
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let json: serde_json::Value = response.json()
+        .await
+        .map_err(|e| format!("Parse JSON failed: {}", e))?;
+
+    if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+        if url.starts_with("http") {
+            return Ok(url.to_string());
+        }
+    }
+
+    let err = json.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
+    Err(format!("Failed to get kugou play URL: {}", err))
+}
+
+// 获取网易云播放直链（外链接口，自动302重定向到mp3）
+fn get_netease_play_url(id: &str) -> Result<String, String> {
+    Ok(format!("https://music.163.com/song/media/outer/url?id={}.mp3", id))
+}
+
+// 获取酷我播放直链（antiserver convert_url）
+async fn get_kuwo_play_url(client: &Client, id: &str) -> Result<String, String> {
+    let rid = if id.starts_with("MUSIC_") { id.to_string() } else { format!("MUSIC_{}", id) };
+    let response = client.get("http://antiserver.kuwo.cn/anti.s")
+        .query(&[("type", "convert_url"), ("rid", rid.as_str()), ("format", "mp3"), ("response", "url")])
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let url = response.text()
+        .await
+        .map_err(|e| format!("Read response failed: {}", e))?;
+
+    let trimmed = url.trim();
+    if trimmed.starts_with("http") {
+        Ok(trimmed.to_string())
+    } else {
+        Err("Failed to get kuwo play URL".to_string())
+    }
 }
 
 // 获取qqmp3播放URL
@@ -1132,84 +1311,22 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
     
     eprintln!("[Migu] Getting play URL: content_id={}, copyright_id={}", content_id, copyright_id);
 
-    // 第一步：搜索歌曲详情，获取rateFormats
-    let search_url = format!(
-        "https://c.musicapp.migu.cn/v1.0/content/search_all.do?text={}&pageNo=1&pageSize=1&isCopyright=1&sort=1&searchSwitch={{'song':1,'album':0,'singer':0,'tagSong':1,'mvSong':0,'bestShow':1}}",
-        content_id
-    );
-    
-    eprintln!("[Migu] Searching for song details");
-    
-    let search_response = client.get(&search_url)
-        .header("accept", "application/json, text/plain, */*")
-        .header("accept-encoding", "gzip, deflate, br, zstd")
-        .header("accept-language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7")
-        .header("activityid", "v4_zt_2022_music")
-        .header("appid", "ce")
-        .header("channel", "014X031")
-        .header("deviceid", "E60C6B2F-7F11-4362-9FCE-6F1CC86E0F18")
-        .header("logid", "h5page[1808]")
-        .header("mgm-network-operators", "02")
-        .header("mgm-network-standard", "03")
-        .header("mgm-network-type", "03")
-        .header("origin", "https://y.migu.cn")
-        .header("recommendstatus", "1")
-        .header("referer", "https://y.migu.cn/app/v4/zt/2022/music/index.html")
-        .header("sec-ch-ua", "\"Google Chrome\";v=\"143\", \"Chromium\";v=\"143\", \"Not A(Brand\";v=\"24\"")
-        .header("sec-ch-ua-mobile", "?0")
-        .header("sec-ch-ua-platform", "\"Windows\"")
-        .header("sec-fetch-dest", "empty")
-        .header("sec-fetch-mode", "cors")
-        .header("sec-fetch-site", "same-site")
-        .header("subchannel", "014X031")
-        .header("test", "00")
-        .header("ua", "Android_migu")
-        .header("version", "6.8.8")
-        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36")
-        .send()
-        .await
-        .map_err(|e| format!("Search request failed: {}", e))?;
+    // 直接尝试常见音质组合（resourceType, toneFlag）
+    // 注：旧实现先用 contentId 当关键词搜索拿 rateFormats，结果不稳定，已移除
+    let rate_formats: Vec<(&str, &str)> = vec![
+        ("2", "PQ"),
+        ("2", "HQ"),
+        ("3", "LQ"),
+        ("E", "SQ"),
+    ];
 
-    let search_json: serde_json::Value = search_response.json()
-        .await
-        .map_err(|e| format!("Parse search JSON failed: {}", e))?;
+    eprintln!("[Migu] Trying {} quality combinations", rate_formats.len());
 
-    // 获取歌曲列表
-    let songs = search_json.get("songResultData")
-        .and_then(|d| d.get("result"))
-        .and_then(|r| r.as_array())
-        .ok_or("No songs found")?;
-    
-    if songs.is_empty() {
-        return Err("Song not found".to_string());
-    }
-    
-    let song = &songs[0];
-    
-    // 获取rateFormats和newRateFormats
-    let mut rate_formats = Vec::new();
-    if let Some(formats) = song.get("rateFormats").and_then(|f| f.as_array()) {
-        rate_formats.extend(formats.iter().cloned());
-    }
-    if let Some(formats) = song.get("newRateFormats").and_then(|f| f.as_array()) {
-        rate_formats.extend(formats.iter().cloned());
-    }
-    
-    if rate_formats.is_empty() {
-        return Err("No rate formats found".to_string());
-    }
-    
-    eprintln!("[Migu] Found {} rate formats", rate_formats.len());
-    
     // 尝试每个音质格式
-    for rate in &rate_formats {
-        let format_type = rate.get("formatType").and_then(|v| v.as_str()).unwrap_or("");
-        let resource_type = rate.get("resourceType").and_then(|v| v.as_str()).unwrap_or("");
-        
-        if format_type.is_empty() || resource_type.is_empty() {
-            continue;
-        }
-        
+    for (resource_type, format_type) in &rate_formats {
+        let format_type = *format_type;
+        let resource_type = *resource_type;
+
         eprintln!("[Migu] Trying: format_type={}, resource_type={}", format_type, resource_type);
         
         let listen_url = format!(
@@ -1259,7 +1376,7 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
                 if url.starts_with("http") {
                     // 修复URL中的品质路径
                     let fixed_url = url.replace("MP3_128_16_Stero", "MP3_320_16_Stero");
-                    eprintln!("[Migu] Success: {}", &fixed_url[..fixed_url.len().min(100)]);
+                    eprintln!("[Migu] Success: {}", safe_truncate(&fixed_url, 100));
                     return Ok(fixed_url);
                 }
             }
@@ -1304,7 +1421,7 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
                     if let Some(url) = fallback_json.get("data").and_then(|d| d.get("url")).and_then(|v| v.as_str()) {
                         if url.starts_with("http") {
                             let fixed_url = url.replace("MP3_128_16_Stero", "MP3_320_16_Stero");
-                            eprintln!("[Migu] Fallback success: {}", &fixed_url[..fixed_url.len().min(100)]);
+                            eprintln!("[Migu] Fallback success: {}", safe_truncate(&fixed_url, 100));
                             return Ok(fixed_url);
                         }
                     }
@@ -1319,6 +1436,44 @@ async fn get_migu_play_url(client: &Client, id: &str) -> Result<String, String> 
 
 // 获取livepoo播放URL
 async fn get_livepoo_play_url(client: &Client, id: &str) -> Result<String, String> {
+    // 新版站点：详情页内嵌 music_mp3Url 直链（旧 /audio/play 接口已返回404）
+    let info_url = format!("https://www.livepoo.cn/music/info.html?id=MUSIC_{}", id);
+    let response = client.get(&info_url)
+        .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+        .header("accept-language", "zh-CN,zh;q=0.9,en;q=0.8")
+        .header("referer", "https://www.livepoo.cn/")
+        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        .send()
+        .await
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    let html = response.text()
+        .await
+        .map_err(|e| format!("Read response failed: {}", e))?;
+
+    // 页面内JSON存在 \/ 转义："music_mp3Url":"http:\/\/xxx.mp3..."
+    // 定位 music_mp3Url 后的第一个 http 链接，截至引号后再反转义
+    if let Some(idx) = html.find("music_mp3Url") {
+        let rest = &html[idx..];
+        if let Some(http_idx) = rest.find("http") {
+            let url_part = &rest[http_idx..];
+            if let Some(end) = url_part.find('"') {
+                let raw = &url_part[..end];
+                // 先合并双反斜杠（双层转义），再处理 \/ ，最后去掉尾部残留反斜杠
+                let url = raw
+                    .replace("\\\\", "\\")
+                    .replace("\\/", "/")
+                    .trim_end_matches('\\')
+                    .to_string();
+                if url.starts_with("http") && url.contains("://") {
+                    eprintln!("[Livepoo] Got mp3 url from info page: {}", safe_truncate(&url, 100));
+                    return Ok(url);
+                }
+            }
+        }
+    }
+
+    // Fallback：旧版播放接口（已失效，保留以防站点回滚）
     let play_url = format!("https://www.livepoo.cn/audio/play?id={}", id);
     let response = client.get(&play_url)
         .header("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -1569,4 +1724,160 @@ pub async fn open_download_folder(app: tauri::AppHandle) -> Result<(), String> {
     }
     
     Ok(())
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+
+    fn test_client() -> Client {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore] // 需要网络，手动运行: cargo test -- --ignored
+    async fn test_search_qqmp3() {
+        let client = test_client();
+        let resp = search_qqmp3(&client, "test").await.expect("qqmp3 search failed");
+        assert!(!resp.items.is_empty(), "qqmp3 returned no items");
+        println!("qqmp3: {} items, first: {} - {}", resp.items.len(), resp.items[0].title, resp.items[0].artist);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_gequhai() {
+        let client = test_client();
+        let resp = search_gequhai(&client, "test", "gequhai").await.expect("gequhai search failed");
+        assert!(!resp.items.is_empty(), "gequhai returned no items");
+        println!("gequhai: {} items, first: {} - {} (id={})", resp.items.len(), resp.items[0].title, resp.items[0].artist, resp.items[0].id);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_livepoo() {
+        let client = test_client();
+        let resp = search_livepoo(&client, "test").await.expect("livepoo search failed");
+        assert!(!resp.items.is_empty(), "livepoo returned no items");
+        println!("livepoo: {} items, first: {} - {} (id={})", resp.items.len(), resp.items[0].title, resp.items[0].artist, resp.items[0].id);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_livepoo_play_url() {
+        let client = test_client();
+        let resp = search_livepoo(&client, "test").await.expect("livepoo search failed");
+        let id = &resp.items[0].id;
+        let url = get_livepoo_play_url(&client, id).await.expect("livepoo play url failed");
+        assert!(url.contains("://"), "invalid url: {}", url);
+        println!("livepoo play url: {}", safe_truncate(&url, 120));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_gequhai_play_url() {
+        let client = test_client();
+        let resp = search_gequhai(&client, "test", "gequhai").await.expect("gequhai search failed");
+        let id = &resp.items[0].id;
+        match get_gequhai_play_url(&client, id).await {
+            Ok(url) => println!("gequhai play url: {}", safe_truncate(&url, 120)),
+            Err(e) => println!("gequhai play url failed (may be expected for some songs): {}", e),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_qq() {
+        let client = test_client();
+        let resp = search_qq(&client, "test").await.expect("qq search failed");
+        assert!(!resp.items.is_empty(), "qq returned no items");
+        println!("qq: {} items, first: {} - {}", resp.items.len(), resp.items[0].title, resp.items[0].artist);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_jianbin_kugou() {
+        let client = test_client();
+        let resp = search_jianbin_kugou(&client, "test").await.expect("kugou search failed");
+        assert!(!resp.items.is_empty(), "kugou returned no items");
+        println!("kugou: {} items, first: {} - {} (id={})", resp.items.len(), resp.items[0].title, resp.items[0].artist, resp.items[0].id);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_jianbin_netease() {
+        let client = test_client();
+        let resp = search_jianbin_netease(&client, "test").await.expect("netease search failed");
+        assert!(!resp.items.is_empty(), "netease returned no items");
+        println!("netease: {} items, first: {} - {} (id={})", resp.items.len(), resp.items[0].title, resp.items[0].artist, resp.items[0].id);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_jianbin_kuwo() {
+        let client = test_client();
+        let resp = search_jianbin_kuwo(&client, "test").await.expect("kuwo search failed");
+        assert!(!resp.items.is_empty(), "kuwo returned no items");
+        println!("kuwo: {} items, first: {} - {} (id={})", resp.items.len(), resp.items[0].title, resp.items[0].artist, resp.items[0].id);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_kugou_play_url() {
+        let client = test_client();
+        let resp = search_jianbin_kugou(&client, "test").await.expect("kugou search failed");
+        let mut got_url = false;
+        for item in resp.items.iter().take(10) {
+            match get_kugou_play_url(&client, &item.id).await {
+                Ok(url) => {
+                    println!("kugou play url ({}): {}", item.title, safe_truncate(&url, 120));
+                    got_url = true;
+                    break;
+                }
+                Err(e) => println!("kugou play url failed for {}: {}", item.title, e),
+            }
+        }
+        assert!(got_url, "no playable kugou song found in first 10 results");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_kuwo_play_url() {
+        let client = test_client();
+        let resp = search_jianbin_kuwo(&client, "test").await.expect("kuwo search failed");
+        let mut got_url = false;
+        for item in resp.items.iter().take(10) {
+            match get_kuwo_play_url(&client, &item.id).await {
+                Ok(url) => {
+                    println!("kuwo play url ({}): {}", item.title, safe_truncate(&url, 120));
+                    got_url = true;
+                    break;
+                }
+                Err(e) => println!("kuwo play url failed for {}: {}", item.title, e),
+            }
+        }
+        assert!(got_url, "no playable kuwo song found in first 10 results");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_search_bugu() {
+        let client = test_client();
+        let resp = search_bugu(&client, "test").await.expect("bugu search failed");
+        assert!(!resp.items.is_empty(), "bugu returned no items");
+        println!("bugu: {} items, first: {} - {} (id={})", resp.items.len(), resp.items[0].title, resp.items[0].artist, resp.items[0].id);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_bugu_play_url() {
+        let client = test_client();
+        let resp = search_bugu(&client, "test").await.expect("bugu search failed");
+        let id = &resp.items[0].id;
+        let url = get_bugu_play_url(&client, id).await.expect("bugu play url failed");
+        assert!(url.contains("://"), "invalid url: {}", url);
+        println!("bugu play url: {}", safe_truncate(&url, 120));
+    }
 }
